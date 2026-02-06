@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>clwclw-monitor</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">clwclw-monitor</div>
+        <div class="brand-sub">Coordinator Dashboard (MVP)</div>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshBtn" class="btn">Refresh</button>
+        <label class="toggle">
+          <input id="autoRefresh" type="checkbox" checked />
+          <span>Auto refresh</span>
+        </label>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="grid">
+        <div class="card">
+          <div class="card-title">Agents</div>
+          <div class="metrics">
+            <div class="metric">
+              <div class="metric-label">Active</div>
+              <div id="agentsCount" class="metric-value">-</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Last refresh</div>
+              <div id="lastRefresh" class="metric-value small">-</div>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Subscriptions</th>
+                  <th>Tmux</th>
+                  <th>Last seen</th>
+                  <th>Current task</th>
+                </tr>
+              </thead>
+              <tbody id="agentsTbody">
+                <tr>
+                  <td colspan="6" class="muted">No data</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Quick Actions</div>
+
+          <div class="form">
+            <div class="form-title">Auth (Optional)</div>
+            <div class="row2">
+              <input id="apiKey" placeholder="X-Api-Key (only if auth enabled)" />
+              <button id="saveApiKeyBtn" class="btn">Save</button>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="form-title">Create Channel</div>
+            <div class="row">
+              <input id="channelName" placeholder="name (e.g. backend-domain)" />
+              <input id="channelDesc" placeholder="description (optional)" />
+              <button id="createChannelBtn" class="btn primary">Create</button>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="form-title">Create Task</div>
+            <div class="row">
+              <select id="taskChannel"></select>
+              <input id="taskTitle" placeholder="title" />
+            </div>
+            <div class="row">
+              <input id="taskDesc" placeholder="description (optional)" />
+              <button id="createTaskBtn" class="btn primary">Create</button>
+            </div>
+          </div>
+
+          <div class="form">
+            <div class="form-title">Claim Task (FIFO)</div>
+            <div class="row">
+              <input id="claimAgentId" placeholder="agent_id (uuid)" />
+              <select id="claimChannel"></select>
+              <button id="claimTaskBtn" class="btn">Claim</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card span2">
+          <div class="card-title">Task Board</div>
+          <div id="taskBoard" class="channels">
+            <div class="muted">No channels yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card span2">
+          <div class="card-title">Recent Events</div>
+          <div id="eventsList" class="events">
+            <div class="muted">No events yet.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="promptModal" class="modal hidden" role="dialog" aria-modal="true">
+      <div class="modal-backdrop" data-action="close-modal"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title">Interactive Prompt</div>
+          <button id="promptCloseBtn" class="btn">Close</button>
+        </div>
+        <div id="promptMeta" class="modal-meta muted"></div>
+        <pre id="promptSnippet" class="modal-snippet"></pre>
+        <div id="promptOptions" class="modal-options"></div>
+        <div id="promptControls" class="modal-controls"></div>
+        <div class="modal-footer">
+          <input id="promptInput" placeholder="Type response (will send + Enter)" />
+          <button id="promptSendBtn" class="btn primary">Send</button>
+        </div>
+        <div id="promptStatus" class="modal-status muted"></div>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <div>Polling-based MVP. Real-time (SSE/WS/Supabase Realtime) will come later.</div>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
