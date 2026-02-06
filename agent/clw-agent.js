@@ -589,13 +589,14 @@ function tmuxInject(target, text) {
     throw new Error(`tmux session not found: ${tmuxTargetSession(target) || target}`);
   }
 
-  // best-effort clear + send + enter
+  // best-effort clear + send + ctrl+enter (for Claude Code submission)
   spawnSync('tmux', ['send-keys', '-t', target, 'C-u'], { stdio: 'ignore' });
   const resultSend = spawnSync('tmux', ['send-keys', '-t', target, text], { stdio: 'ignore' });
   if (resultSend.status !== 0) {
     throw new Error('tmux send-keys failed');
   }
-  spawnSync('tmux', ['send-keys', '-t', target, 'Enter'], { stdio: 'ignore' });
+  // Use C-Enter for Claude Code submission (Enter alone = newline)
+  spawnSync('tmux', ['send-keys', '-t', target, 'C-Enter'], { stdio: 'ignore' });
 }
 
 function tmuxSend(target, text, opts = {}) {
