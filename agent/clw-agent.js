@@ -671,6 +671,108 @@ function tmuxSendKeys(target, keys) {
   }
 }
 
+/**
+ * Detect current Claude Code execution mode from tmux screen capture.
+ * Returns: 'accept-edits', 'plan-mode', 'bypass-permission', or 'normal'.
+ */
+function detectCurrentMode(target, paneId = '') {
+  try {
+    // Capture last 5 lines of screen (mode indicators are usually at the bottom)
+    const capture = tmuxCapture(target, 5, paneId);
+    const text = String(capture || '').toLowerCase();
+
+    // Check for mode indicators
+    if (text.includes('accept edits on')) {
+      return 'accept-edits';
+    }
+    if (text.includes('plan mode on')) {
+      return 'plan-mode';
+    }
+    if (text.includes('bypass permission on')) {
+      return 'bypass-permission';
+    }
+
+    return 'normal';
+  } catch (err) {
+    console.error(`[detectCurrentMode] Error: ${err.message}`);
+    return 'normal'; // Default to normal on error
+  }
+}
+
+/**
+ * Switch Claude Code to target execution mode using Shift+Tab cycling.
+ * Mode order: normal → accept-edits → plan-mode → (bypass-permission) → normal
+ * Returns true on success, false on failure.
+ */
+function switchToMode(target, targetMode, paneId = '', maxRetries = 9) {
+  if (!targetMode || targetMode === 'normal') {
+    console.log('[switchToMode] No mode switch needed (target: normal or empty)');
+    return true;
+  }
+
+  const validModes = ['accept-edits', 'plan-mode', 'bypass-permission'];
+  if (!validModes.includes(targetMode)) {
+    console.error(`[switchToMode] Invalid target mode: ${targetMode}`);
+    return false;
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[switchToMode] Attempt ${attempt}/${maxRetries}: Switching to ${targetMode}`);
+
+      // Detect current mode
+      const currentMode = detectCurrentMode(target, paneId);
+      console.log(`[switchToMode] Current mode: ${currentMode}`);
+
+      if (currentMode === targetMode) {
+        console.log(`[switchToMode] Already in target mode: ${targetMode}`);
+        return true;
+      }
+
+      // Calculate shift count based on mode cycle
+      // Cycle: normal(0) → accept-edits(1) → plan-mode(2) → bypass-permission(3) → normal(0)
+      const modeOrder = ['normal', 'accept-edits', 'plan-mode', 'bypass-permission'];
+      const currentIndex = modeOrder.indexOf(currentMode);
+      const targetIndex = modeOrder.indexOf(targetMode);
+
+      let shiftCount;
+      if (targetIndex > currentIndex) {
+        shiftCount = targetIndex - currentIndex;
+      } else {
+        shiftCount = modeOrder.length - currentIndex + targetIndex;
+      }
+
+      console.log(`[switchToMode] Sending Shift+Tab x${shiftCount}`);
+
+      // Send Shift+Tab N times
+      for (let i = 0; i < shiftCount; i++) {
+        tmuxSendKeys(target, ['S-Tab'], paneId);
+        // Small delay between key presses
+        spawnSync('sleep', ['0.2'], { stdio: 'ignore' });
+      }
+
+      // Wait for mode switch to complete
+      spawnSync('sleep', ['0.3'], { stdio: 'ignore' });
+
+      // Verify mode switch
+      const newMode = detectCurrentMode(target, paneId);
+      console.log(`[switchToMode] New mode after switch: ${newMode}`);
+
+      if (newMode === targetMode) {
+        console.log(`[switchToMode] Successfully switched to ${targetMode}`);
+        return true;
+      }
+
+      console.warn(`[switchToMode] Mode switch verification failed (expected: ${targetMode}, got: ${newMode})`);
+    } catch (err) {
+      console.error(`[switchToMode] Attempt ${attempt} failed: ${err.message}`);
+    }
+  }
+
+  console.error(`[switchToMode] Failed to switch to ${targetMode} after ${maxRetries} attempts`);
+  return false;
+}
+
 function formatTaskForInjection(task) {
   const title = String(task?.title || '').trim();
   const desc = String(task?.description || '').trim();
