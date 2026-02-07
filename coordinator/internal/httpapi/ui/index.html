@@ -41,7 +41,8 @@
               <thead>
                 <tr>
                   <th>Name</th>
-                  <th>Status</th>
+                  <th>Worker</th>
+                  <th>Claude</th>
                   <th>Subscriptions</th>
                   <th>Tmux</th>
                   <th>Last seen</th>
@@ -50,7 +51,7 @@
               </thead>
               <tbody id="agentsTbody">
                 <tr>
-                  <td colspan="6" class="muted">No data</td>
+                  <td colspan="7" class="muted">No data</td>
                 </tr>
               </tbody>
             </table>
@@ -85,7 +86,15 @@
             </div>
             <div class="row">
               <input id="taskDesc" placeholder="description (optional)" />
-              <button id="createTaskBtn" class="btn primary">Create</button>
+              <select id="taskExecutionMode">
+                <option value="">Mode: Default (no change)</option>
+                <option value="accept-edits">Mode: Accept Edits</option>
+                <option value="plan-mode">Mode: Plan Mode</option>
+                <option value="bypass-permission">Mode: Bypass Permission</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="createTaskBtn" class="btn primary">Create Task</button>
             </div>
           </div>
 
