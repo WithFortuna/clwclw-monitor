@@ -1,0 +1,3 @@
+[submodule "Claude-Code-Remote"]
+	path = Claude-Code-Remote
+	url = https://github.com/JessyTsui/Claude-Code-Remote.git
