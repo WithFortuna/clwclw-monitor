@@ -1,0 +1,27 @@
+{
+  "language": "zh-CN",
+  "sound": {
+    "completed": "Glass",
+    "waiting": "Tink"
+  },
+  "enabled": true,
+  "timeout": 5,
+  "customMessages": {
+    "completed": null,
+    "waiting": null
+  },
+  "channels": {
+    "desktop": {
+      "enabled": true,
+      "priority": 1
+    }
+  },
+  "relay": {
+    "enabled": false,
+    "port": 3000,
+    "auth": {
+      "enabled": false,
+      "token": null
+    }
+  }
+}
