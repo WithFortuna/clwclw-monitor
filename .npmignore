@@ -1,0 +1,50 @@
+# Source files (keep only packaged artifacts)
+coordinator/
+supabase/
+tasks/
+agent/
+Claude-Code-Remote/
+
+# Build & workspace
+go.work
+go.work.sum
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+.claude/
+
+# Environment
+.env
+.env.local
+.env.example
+
+# Git
+.git/
+.github/
+.gitignore
+.gitmodules
+
+# Docs (keep README.md)
+REQUIREMENTS.md
+RUNBOOK.md
+USECASES.md
+CLAUDE_CODE_REMOTE_USECASES.md
+CLAUDE.md
+
+# Scripts (keep scripts/vendor-ccr.js for prepublishOnly)
+# (none to exclude here)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test files
+test/
+*.test.js
