@@ -1,0 +1,130 @@
+# Work Log
+
+## 2026-02-03
+
+### Scope
+
+- 목표: **기존 `Claude-Code-Remote` 기능 회귀 없이 유지**하면서, Go 기반 Coordinator + Supabase 스키마 + 로컬 Agent 브릿지 기반으로 “중앙 관측/태스크” 확장 작업 착수.
+
+### Done
+
+- 동작 분석/유스케이스 문서화
+  - `CLAUDE_CODE_REMOTE_USECASES.md:1` 추가(모듈 경계/유스케이스/보안/세션 유지 여부 포함)
+- “레거시 활용 + 점진적 Go 마이그레이션” 전략 문서화 착수
+  - `tasks/0006-migration-plan.md:1` 추가(현재는 포팅이 아니라 strangler 방식이라는 점을 명시)
+- 레거시 회귀 방지 문서/스모크 루틴 정리
+  - `tasks/0004-preserve-legacy-features.md:1` 확장(체크리스트/멀티세션 시나리오/진단 루틴)
+  - `tasks/smoke/legacy-static-check.sh:1` 추가(파일 존재 + Node syntax 체크)
+- 레거시 CLI `diagnose` 경로 누락 보완
+  - `Claude-Code-Remote/diagnose-automation.js:1` 추가(`node claude-remote.js diagnose`에서 사용)
+- Task 상태 전이 추가(완료/실패 처리)
+  - Coordinator API: `POST /v1/tasks/complete`, `POST /v1/tasks/fail` (`coordinator/internal/httpapi/handlers.go:1`, `coordinator/internal/httpapi/server.go:1`)
+  - 저장소 구현: `coordinator/internal/store/store.go:1`, `coordinator/internal/store/memory/memory.go:1`, `coordinator/internal/store/postgres/postgres.go:1`
+  - UI 반영(폴링 기반 Done/Failed 마킹): `coordinator/internal/httpapi/ui/app.js:1`, `coordinator/internal/httpapi/ui/styles.css:1`
+- 작업 추적 체계 구축
+  - `tasks/README.md:1`, `tasks/INDEX.md:1`, `tasks/0001-*.md`, `tasks/0002-*.md`, `tasks/0003-*.md`, `tasks/0004-*.md`, `tasks/0005-*.md` 추가/갱신
+- Coordinator(Go) 초기 구현
+  - `coordinator/` 추가: in-memory store + API(health, agents heartbeat, channels, tasks, claim, events ingest/list)
+  - `coordinator/internal/store/postgres/postgres.go:1` 추가: `COORDINATOR_DATABASE_URL` 설정 시 Postgres(Supabase) 저장소 사용(함수 `claim_task()` 기반 FIFO claim)
+  - `supabase/migrations/0001_init.sql:1` 추가: `agents/channels/tasks/events` + 인덱스 + `claim_task()` 함수 초안
+- Agent bridge(레거시 기능 유지 + Coordinator 업로드)
+  - `agent/clw-agent.js:1` 추가:
+    - `hook completed|waiting`: 레거시 `Claude-Code-Remote/claude-hook-notify.js` 실행 후 Coordinator에 heartbeat/event 업로드(베스트 에포트)
+    - `run`: 레거시 `Claude-Code-Remote/start-all-webhooks.js` 실행 + 주기적 heartbeat
+    - `.env`(Claude-Code-Remote) best-effort 로드로 최소 설정
+  - `agent/README.md:1` 추가
+- 레거시 레포의 훅 설치를 agent 래퍼로 우선 전환
+  - `Claude-Code-Remote/setup.js:1`: `agent/clw-agent.js`가 있으면 훅 커맨드를 `node ../agent/clw-agent.js hook ...`로 설치(기존 레거시 훅 커맨드는 제거해 중복 알림 방지)
+  - `Claude-Code-Remote/setup-telegram.sh:1`: `claude-hooks.json` 생성 시 agent 래퍼 훅 우선
+- 레거시 런타임에서 Coordinator 업로드(옵션)
+  - `Claude-Code-Remote/src/core/coordinator-client.js:1` 추가(COORDINATOR_URL 설정 시만 동작)
+  - Telegram/LINE/Email 인바운드 성공/실패 이벤트 업로드 연결:
+    - `Claude-Code-Remote/src/channels/telegram/webhook.js:1`
+    - `Claude-Code-Remote/src/channels/line/webhook.js:1`
+    - `Claude-Code-Remote/src/relay/command-relay.js:1`
+  - `.env.example`에 Coordinator 관련 변수 주석 추가: `Claude-Code-Remote/.env.example:1`
+- Coordinator UI(MVP, polling)
+  - `coordinator/internal/httpapi/ui/*` 추가(정적 페이지 embed)
+  - `/`에서 에이전트/이벤트/태스크 조회(폴링 기반)
+- 실시간 반영(SSE) + 대시보드 Auth UX
+  - Coordinator SSE: `GET /v1/stream` (`coordinator/internal/httpapi/handlers.go:1`, `coordinator/internal/httpapi/server.go:1`)
+  - 대시보드 EventSource 연동 + API Key 저장(localStorage) + 요청 헤더 포함: `coordinator/internal/httpapi/ui/app.js:1`, `coordinator/internal/httpapi/ui/index.html:1`, `coordinator/internal/httpapi/ui/styles.css:1`
+  - Auth 토큰이 켜져도 UI는 로드되게 허용 + SSE는 `api_key` 쿼리로 통과: `coordinator/internal/httpapi/middleware.go:1`
+- 30일 이벤트 보관(서버 purge)
+  - 설정: `COORDINATOR_EVENT_RETENTION_DAYS`(default 30), `COORDINATOR_RETENTION_INTERVAL_HOURS`(default 24) (`coordinator/internal/config/config.go:1`)
+  - purge 구현: `coordinator/internal/store/memory/memory.go:1`, `coordinator/internal/store/postgres/postgres.go:1`
+  - 실행 루프: `coordinator/cmd/coordinator/main.go:1`
+- Idempotency(중복 업로드/재시도 안전)
+  - Supabase 테이블: `public.task_claim_idempotency` 추가(Claim 재시도 시 동일 task 보장): `supabase/migrations/0001_init.sql:1`
+  - Postgres claim: idempotency key 지원(동일 키면 동일 task 반환): `coordinator/internal/store/postgres/postgres.go:1`
+  - Memory claim: idempotency key 지원(동일 키면 동일 task 반환): `coordinator/internal/store/memory/memory.go:1`
+  - Complete/Fail: `in_progress → done/failed` 전이만 수행 + 이미 완료/실패면 상태 유지(시간 값 변형 방지): `coordinator/internal/store/postgres/postgres.go:1`, `coordinator/internal/store/memory/memory.go:1`
+  - Events: 중복(idempotency conflict)은 에러가 아니라 `deduped`로 처리: `coordinator/internal/httpapi/handlers.go:1`
+  - Agent worker: claim 재시도 시 동일 `idempotency_key`를 재사용: `agent/clw-agent.js:1`
+- Agent subscriptions(채널 구독) 메타
+  - `AGENT_CHANNELS` + worker 채널을 heartbeat `meta.subscriptions`로 업로드: `agent/clw-agent.js:1`
+  - 대시보드에서 subscriptions 표시: `coordinator/internal/httpapi/ui/index.html:1`, `coordinator/internal/httpapi/ui/app.js:1`
+- 레거시 정적 스모크 강화
+  - `Claude-Code-Remote/` 전체 `.js`에 대해 `node --check` 수행: `tasks/smoke/legacy-static-check.sh:1`
+  - 레거시 테스트 스크립트의 문법 오류 수정: `Claude-Code-Remote/test-injection.js:1`
+- 대시보드 부하 절감(동접 1,000 대비)
+  - 단일 스냅샷 API: `GET /v1/dashboard` + 1s TTL 캐시: `coordinator/internal/httpapi/dashboard.go:1`, `coordinator/internal/httpapi/server.go:1`
+  - UI는 `/v1/dashboard`만 호출(기존 4개 API 호출 제거): `coordinator/internal/httpapi/ui/app.js:1`
+- 마이그레이션 전략 문서 확정(strangler)
+  - 현재는 “레거시 활용 + 점진적 치환”이며 Go 통째 포팅이 아님을 명시: `tasks/0006-migration-plan.md:1`
+- 에이전트 워커 tmux 타겟 지정
+  - `--tmux-target` 지원으로 `session:window.pane` 주입 가능: `agent/clw-agent.js:1`, `tasks/0008-agent-worker.md:1`
+- 에이전트 워커 멀티 채널
+  - `--channel "a,b,c"`로 구독 채널을 순회하며 FIFO claim: `agent/clw-agent.js:1`, `tasks/0008-agent-worker.md:1`
+- `0008-agent-worker.md` 완료 처리(단일 in-flight 가정, 멀티 in-flight은 Post-MVP)
+- 멀티 세션(5 Claude) Agent 분리
+  - tmux target별 state dir(`agent/data/instances/*`)로 agent id/current-task 충돌 방지: `agent/clw-agent.js:1`, `tasks/0009-multi-session-agents.md:1`
+  - hook은 tmux target을 감지해 동일 state dir를 사용: `agent/clw-agent.js:1`
+  - 대시보드에 tmux 정보 컬럼 추가: `coordinator/internal/httpapi/ui/index.html:1`, `coordinator/internal/httpapi/ui/app.js:1`
+- 수동 할당(특정 task → 특정 agent)
+  - API: `POST /v1/tasks/assign`: `coordinator/internal/httpapi/server.go:1`, `coordinator/internal/httpapi/handlers.go:1`
+  - Store: `coordinator/internal/store/store.go:1`, `coordinator/internal/store/memory/memory.go:1`, `coordinator/internal/store/postgres/postgres.go:1`
+  - UI: queued 카드에 Assign 버튼(최소 prompt): `coordinator/internal/httpapi/ui/app.js:1`
+- 제공 기능 유스케이스(1문장) 카탈로그 생성
+  - Living doc 추가: `USECASES.md:1`
+  - Task 문서 완료: `tasks/0011-usecases-catalog.md:1`
+- 후속 백로그 태스크 분해(운영/배포 패키징은 최후순위)
+  - `tasks/0012-multi-session-routing.md:1`
+  - `tasks/0013-hardening-basics.md:1`
+  - `tasks/0014-task-orchestration-enhancements.md:1`
+  - `tasks/0015-trace-centralization.md:1`
+  - `tasks/0016-legacy-quality.md:1`
+  - `tasks/0017-auth-rbac.md:1`
+  - `tasks/0018-observability.md:1`
+  - `tasks/0019-deployment-packaging.md:1`
+- 멀티 세션(예: 5개 Claude) 토큰 라우팅 정확도 개선(tmux target/pane 지원)
+  - Outbound 세션 기록에 `tmuxTarget(session:window.pane)` 저장: `Claude-Code-Remote/src/channels/telegram/telegram.js:1`, `Claude-Code-Remote/src/channels/line/line.js:1`, `Claude-Code-Remote/src/channels/email/smtp.js:1`
+  - Inbound 주입은 `tmuxTarget` 우선 사용: `Claude-Code-Remote/src/channels/telegram/webhook.js:1`, `Claude-Code-Remote/src/channels/line/webhook.js:1`
+  - 주입 유틸이 pane target을 지원: `Claude-Code-Remote/src/utils/controller-injector.js:1`
+  - relay-pty 무인 주입도 target 지원: `Claude-Code-Remote/src/relay/relay-pty.js:1`, `Claude-Code-Remote/src/relay/tmux-injector.js:1`
+  - tmux 캡처/트레이스는 안전한 파일명 + target 캡처 지원: `Claude-Code-Remote/src/utils/tmux-monitor.js:1`
+  - CLI notify 메타데이터에 `tmuxTarget` 포함: `Claude-Code-Remote/claude-remote.js:1`
+  - 유스케이스 문서에 target 라우팅 항목 반영: `USECASES.md:1`
+- 로컬 “화면” 인수테스트를 위한 실행 절차 문서화
+  - `RUNBOOK.md:1` 추가
+  - 추적 태스크: `tasks/0020-acceptance-test-runbook.md:1`
+- 로컬 실행 편의 개선(go 모듈 루트 문제 해결)
+  - 루트에서 `go run ./coordinator/cmd/coordinator`가 동작하도록 `go.work` 추가: `go.work:1`
+  - Runbook에 `cd coordinator` 대안 추가: `RUNBOOK.md:1`
+- Claude Code 인터랙티브 선택지(prompt) 감지 + 대시보드 응답 주입
+  - 입력 큐 API 추가: `POST /v1/tasks/inputs`, `POST /v1/tasks/inputs/claim` (`coordinator/internal/httpapi/server.go:1`, `coordinator/internal/httpapi/handlers.go:1`)
+  - Store 구현: `coordinator/internal/store/store.go:1`, `coordinator/internal/store/memory/memory.go:1`, `coordinator/internal/store/postgres/postgres.go:1`
+  - Supabase 마이그레이션: `supabase/migrations/0002_task_inputs.sql:1`
+  - Agent(work)에서 prompt 감지 + 입력 claim/inject + 이벤트 업로드: `agent/clw-agent.js:1`
+  - 대시보드 UI에서 `Prompt…` 버튼 + modal 입력: `coordinator/internal/httpapi/ui/index.html:1`, `coordinator/internal/httpapi/ui/app.js:1`, `coordinator/internal/httpapi/ui/styles.css:1`
+  - 유스케이스 문서 반영: `USECASES.md:1`
+- 인터랙티브 선택지(Enter/Tab/Arrow/Esc) UI 지원 강화
+  - tmux 캡처에서 `Enter to select ... Esc to cancel` 힌트 + `>` marker 기반 현재 선택 추정: `agent/clw-agent.js:1`
+  - 대시보드에서 `Up/Down/Tab/Enter/Esc` 키 전송 + 옵션 클릭 시 `Up/Down + Enter` 주입: `coordinator/internal/httpapi/ui/index.html:1`, `coordinator/internal/httpapi/ui/app.js:1`, `coordinator/internal/httpapi/ui/styles.css:1`
+  - 입력 큐에 `kind=keys`(newline-separated tmux keys) 주입 지원: `agent/clw-agent.js:1`
+  - 추적 태스크: `tasks/0022-interactive-prompt-navigation.md:1`
+
+### Notes / Blockers
+
+- 이 환경에는 `go`가 설치되어 있지 않아(`go version` 실패), Coordinator 빌드/런/테스트는 아직 검증하지 못함.
+- 레거시 Node는 `v23.x`이지만, Agent 래퍼는 Node 14 호환을 목표로 `fetch` 대신 `http/https`를 사용.
