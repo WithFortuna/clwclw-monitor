@@ -77,6 +77,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	chains, err := s.store.ListChains(r.Context(), "") // Get all chains
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to list chains")
+		return
+	}
+
 	tasks, err := s.store.ListTasks(r.Context(), store.TaskFilter{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
