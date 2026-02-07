@@ -71,6 +71,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Compute worker_status for each agent (30 second threshold = 2x heartbeat interval)
+	threshold := 30 * time.Second
+	agentResponses := make([]agentResponse, len(agents))
+	for i, a := range agents {
+		agentResponses[i] = agentResponse{
+			Agent:        a,
+			WorkerStatus: a.DerivedWorkerStatus(threshold),
+		}
+	}
+
 	channels, err := s.store.ListChannels(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
@@ -96,8 +106,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"agents":   agents,
+		"agents":   agentResponses,
 		"channels": channels,
+		"chains":   chains, // Include chains in the response
 		"tasks":    tasks,
 		"events":   events,
 	}
@@ -113,4 +124,3 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(b)
 }
-
