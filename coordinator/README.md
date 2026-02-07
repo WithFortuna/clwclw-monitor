@@ -10,6 +10,21 @@
 - Agent heartbeat / Events ingest / Channels / Tasks / FIFO claim
 - (옵션) 공유 토큰 인증
 
+## Database Migrations
+
+새로운 체인 기반 태스크 관리 기능을 위해 데이터베이스 스키마가 업데이트되었습니다. `supabase/migrations/` 디렉토리에 있는 최신 SQL 마이그레이션 파일들을 적용해야 합니다.
+
+```bash
+# Supabase CLI를 사용하여 마이그레이션을 적용합니다.
+# 로컬 개발 환경에서 Supabase CLI를 설치하고 `supabase start`를 실행한 후,
+# 다음 명령어를 실행하여 마이그레이션을 적용할 수 있습니다.
+supabase db push
+
+# 또는 psql과 같은 PostgreSQL 클라이언트를 사용하여 수동으로 SQL 파일을 실행합니다.
+# 예시: psql -d "your_database_url" -f supabase/migrations/0004_add_chains_and_chain_to_tasks.sql
+# 예시: psql -d "your_database_url" -f supabase/migrations/0005_update_claim_task_function.sql
+```
+
 ## 실행(예시)
 
 > 이 개발 환경에는 Go가 설치되어 있지 않을 수 있습니다. Go 설치 후 아래 커맨드를 사용하세요.
@@ -17,6 +32,20 @@
 ```bash
 cd coordinator
 COORDINATOR_PORT=8080 COORDINATOR_AUTH_TOKEN=devtoken go run ./cmd/coordinator
+```
+
+### 테스트 실행
+
+PostgreSQL 저장소 테스트를 실행하려면 `DATABASE_URL` 환경변수를 설정해야 합니다.
+
+```bash
+# PostgreSQL 인스턴스에 대한 연결 문자열로 변경하세요.
+# 예시: export DATABASE_URL="postgresql://postgres:password@localhost:5432/test_db?sslmode=disable"
+export DATABASE_URL="your_postgres_connection_string"
+go test -v ./internal/store/postgres/...
+
+# 인메모리 저장소 테스트는 DATABASE_URL 없이 실행할 수 있습니다.
+go test -v ./internal/store/memory/...
 ```
 
 ## 환경변수
@@ -42,6 +71,11 @@ COORDINATOR_PORT=8080 COORDINATOR_AUTH_TOKEN=devtoken go run ./cmd/coordinator
 - `GET /v1/agents`
 - `POST /v1/channels`
 - `GET /v1/channels`
+- `POST /v1/chains`
+- `GET /v1/chains`
+- `GET /v1/chains/{id}`
+- `PUT /v1/chains/{id}`
+- `DELETE /v1/chains/{id}`
 - `POST /v1/tasks`
 - `GET /v1/tasks`
 - `POST /v1/tasks/claim` (FIFO)
