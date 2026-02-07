@@ -478,6 +478,133 @@ function normalizePromptText(text) {
     .trim();
 }
 
+/**
+ * Build process tree map from all running processes.
+ * Returns: Map<parentPid, [childPid1, childPid2, ...]>
+ */
+function buildProcessTree() {
+  try {
+    // Get all processes with PID and PPID (macOS compatible)
+    const psResult = spawnSync('ps', ['-ax', '-o', 'pid,ppid'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    if (psResult.status !== 0) return new Map();
+
+    const lines = String(psResult.stdout || '').split('\n');
+    const tree = new Map();
+
+    for (const line of lines) {
+      const match = line.trim().match(/^\s*(\d+)\s+(\d+)/);
+      if (!match) continue;
+
+      const pid = match[1];
+      const ppid = match[2];
+
+      if (!tree.has(ppid)) tree.set(ppid, []);
+      tree.get(ppid).push(pid);
+    }
+
+    return tree;
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * Find all descendant PIDs recursively.
+ */
+function findAllDescendants(parentPid, processTree) {
+  const descendants = [];
+  const children = processTree.get(parentPid) || [];
+
+  for (const childPid of children) {
+    descendants.push(childPid);
+    // Recursively find descendants of this child
+    const childDescendants = findAllDescendants(childPid, processTree);
+    descendants.push(...childDescendants);
+  }
+
+  return descendants;
+}
+
+/**
+ * Find all running 'claude' process PIDs.
+ */
+function findClaudePids() {
+  try {
+    const psResult = spawnSync('ps', ['-eo', 'pid,comm'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    if (psResult.status !== 0) return [];
+
+    const lines = String(psResult.stdout || '').split('\n');
+    const pids = [];
+
+    for (const line of lines) {
+      const match = line.trim().match(/^\s*(\d+)\s+(.+)$/);
+      if (!match) continue;
+
+      const pid = match[1];
+      const comm = match[2].trim();
+
+      if (comm === 'claude') {
+        pids.push(pid);
+      }
+    }
+
+    return pids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Detect if Claude Code is running in the given tmux pane.
+ * Uses recursive process tree traversal to find 'claude' processes.
+ */
+function detectClaudeCodeRunning(target, paneId = '') {
+  try {
+    const resolved = resolveTarget(target, paneId);
+
+    // Get tmux pane PID
+    const panePidResult = spawnSync('tmux', ['display-message', '-t', resolved, '-p', '#{pane_pid}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    if (panePidResult.status !== 0) return false;
+
+    const panePid = String(panePidResult.stdout || '').trim();
+    if (!panePid) return false;
+
+    // Build process tree
+    const processTree = buildProcessTree();
+
+    // Find all descendants of this pane
+    const descendants = findAllDescendants(panePid, processTree);
+
+    // Find all running claude processes
+    const claudePids = findClaudePids();
+
+    if (claudePids.length === 0) return false;
+
+    // Check if any claude PID is in the descendants
+    for (const claudePid of claudePids) {
+      if (descendants.includes(claudePid)) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
+
 function detectInteractivePrompt(captureText) {
   const raw = String(captureText || '');
   if (!raw.trim()) return null;
