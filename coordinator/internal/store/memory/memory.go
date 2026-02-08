@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -90,6 +91,17 @@ func (s *Store) UpsertAgent(_ context.Context, a model.Agent) (model.Agent, erro
 	return a, nil
 }
 
+func (s *Store) GetAgent(_ context.Context, id string) (*model.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.agents[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return &a, nil
+}
+
 func (s *Store) ListAgents(_ context.Context) ([]model.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,6 +151,18 @@ func (s *Store) ListChannels(_ context.Context) ([]model.Channel, error) {
 	return out, nil
 }
 
+func (s *Store) GetChannelByName(_ context.Context, name string) (model.Channel, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, ch := range s.channels {
+		if ch.Name == name {
+			return ch, nil
+		}
+	}
+	return model.Channel{}, store.ErrNotFound
+}
+
 func (s *Store) CreateChain(_ context.Context, c model.Chain) (model.Chain, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,11 +177,7 @@ func (s *Store) CreateChain(_ context.Context, c model.Chain) (model.Chain, erro
 		return model.Chain{}, store.ErrNotFound
 	}
 
-	for _, existing := range s.chains {
-		if existing.ChannelID == c.ChannelID && strings.EqualFold(existing.Name, c.Name) {
-			return model.Chain{}, store.ErrConflict
-		}
-	}
+	// Removed: chain name uniqueness check - allow duplicate names within same channel
 
 	now := time.Now().UTC()
 	c.ID = newID()
@@ -208,12 +228,8 @@ func (s *Store) UpdateChain(_ context.Context, c model.Chain) (model.Chain, erro
 		return model.Chain{}, store.ErrNotFound
 	}
 
-	if strings.TrimSpace(c.Name) != "" && !strings.EqualFold(existing.Name, c.Name) {
-		for _, other := range s.chains {
-			if other.ID != c.ID && other.ChannelID == c.ChannelID && strings.EqualFold(other.Name, c.Name) {
-				return model.Chain{}, store.ErrConflict
-			}
-		}
+	// Removed: chain name uniqueness check - allow duplicate names within same channel
+	if strings.TrimSpace(c.Name) != "" {
 		existing.Name = c.Name
 	}
 
@@ -500,8 +516,23 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 		return nil, store.ErrNotFound
 	}
 
+	// Verify task ownership: request agent must match assigned agent
 	if strings.TrimSpace(req.AgentID) != "" && t.AssignedAgentID != req.AgentID {
+		log.Printf("[store] CompleteTask rejected: request agent_id=%s != task assigned_agent_id=%s (task_id=%s)",
+			req.AgentID, t.AssignedAgentID, req.TaskID)
 		return nil, store.ErrConflict
+	}
+
+	// Additional verification: agent's current_task_id must match this task
+	// (Prevents completing other agent's tasks due to state directory confusion)
+	if agentID := strings.TrimSpace(req.AgentID); agentID != "" {
+		if agent, ok := s.agents[agentID]; ok {
+			if agent.CurrentTaskID != "" && agent.CurrentTaskID != req.TaskID {
+				log.Printf("[store] CompleteTask rejected: agent %s current_task_id=%s != request task_id=%s",
+					agentID, agent.CurrentTaskID, req.TaskID)
+				return nil, store.ErrConflict
+			}
+		}
 	}
 
 	now := time.Now().UTC()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -139,6 +140,23 @@ func (s *Store) ListAgents(ctx context.Context) ([]model.Agent, error) {
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+func (s *Store) GetAgent(ctx context.Context, id string) (*model.Agent, error) {
+	var a model.Agent
+	var metaJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		select id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		from public.agents
+		where id = $1
+	`, id).Scan(&a.ID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt)
+
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+
+	_ = json.Unmarshal(metaJSON, &a.Meta)
+	return &a, nil
 }
 
 func (s *Store) CreateChannel(ctx context.Context, ch model.Channel) (model.Channel, error) {
@@ -353,17 +371,18 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 	var out model.Task
 	err := s.pool.QueryRow(ctx, `
-		insert into public.tasks (channel_id, chain_id, sequence, title, description, status, priority, execution_mode)
-		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), $6, $7, nullif($8, ''))
-		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		insert into public.tasks (channel_id, chain_id, sequence, title, description, type, status, priority, execution_mode)
+		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, nullif($9, ''))
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
-	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, string(status), t.Priority, string(t.ExecutionMode)).Scan(
+	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, t.Type, string(status), t.Priority, string(t.ExecutionMode)).Scan(
 		&out.ID,
 		&out.ChannelID,
 		&out.ChainID,
 		&out.Sequence,
 		&out.Title,
 		&out.Description,
+		&out.Type,
 		&out.Status,
 		&out.Priority,
 		&out.AssignedAgentID,
@@ -381,7 +400,7 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task, error) {
 	query := `
-		select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 		from public.tasks
 	`
@@ -425,6 +444,7 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 			&t.Sequence,
 			&t.Title,
 			&t.Description,
+			&t.Type,
 			&t.Status,
 			&t.Priority,
 			&t.AssignedAgentID,
@@ -488,7 +508,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 		if strings.TrimSpace(existingTaskID) != "" {
 			var out model.Task
 			err := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
+				select id::text, channel_id::text, title, coalesce(description, ''), coalesce(type, ''), status, priority,
 				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
@@ -497,6 +517,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 				&out.ChannelID,
 				&out.Title,
 				&out.Description,
+				&out.Type,
 				&out.Status,
 				&out.Priority,
 				&out.AssignedAgentID,
@@ -533,7 +554,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 	// Claim next queued task atomically (requires migration function claim_task).
 	var t model.Task
 	err = tx.QueryRow(ctx, `
-		select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
+		select id::text, channel_id::text, title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 		from public.claim_task($1::uuid, $2::uuid)
 	`, channelID, req.AgentID).Scan(
@@ -541,6 +562,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 		&t.ChannelID,
 		&t.Title,
 		&t.Description,
+		&t.Type,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
@@ -604,13 +626,14 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		    updated_at = now()
 		where id = $1::uuid
 		  and status = 'queued'
-		returning id::text, channel_id::text, title, coalesce(description, ''), status, priority,
+		returning id::text, channel_id::text, title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`, req.TaskID, req.AgentID).Scan(
 		&t.ID,
 		&t.ChannelID,
 		&t.Title,
 		&t.Description,
+		&t.Type,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
@@ -624,7 +647,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		if errors.Is(err, pgx.ErrNoRows) {
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
+				select id::text, channel_id::text, title, coalesce(description, ''), coalesce(type, ''), status, priority,
 				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
@@ -633,6 +656,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 				&existing.ChannelID,
 				&existing.Title,
 				&existing.Description,
+				&existing.Type,
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,
@@ -680,6 +704,28 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 		return nil, errors.New("task_id_required")
 	}
 
+	// Additional verification: agent's current_task_id must match this task
+	// (Prevents completing other agent's tasks due to state directory confusion)
+	if agentID := strings.TrimSpace(req.AgentID); agentID != "" {
+		var currentTaskID string
+		err := s.pool.QueryRow(ctx, `
+			select coalesce(current_task_id::text, '')
+			from public.agents
+			where id = $1::uuid
+		`, agentID).Scan(&currentTaskID)
+
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, mapPgErr(err)
+		}
+
+		// If agent has a current_task_id, it must match the task being completed
+		if currentTaskID != "" && currentTaskID != req.TaskID {
+			log.Printf("[store] CompleteTask rejected: agent %s current_task_id=%s != request task_id=%s",
+				agentID, currentTaskID, req.TaskID)
+			return nil, store.ErrConflict
+		}
+	}
+
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -700,7 +746,7 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 	}
 	query += " and status = 'in_progress'"
 	query += `
-		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`
 
@@ -712,6 +758,7 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 		&t.Sequence,
 		&t.Title,
 		&t.Description,
+		&t.Type,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
@@ -726,7 +773,7 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 			// Either task doesn't exist, agent mismatch, or already done.
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
@@ -737,6 +784,7 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 				&existing.Sequence,
 				&existing.Title,
 				&existing.Description,
+				&existing.Type,
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,
@@ -754,9 +802,13 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 			}
 
 			if strings.TrimSpace(req.AgentID) != "" && existing.AssignedAgentID != strings.TrimSpace(req.AgentID) {
+				log.Printf("[store] CompleteTask rejected: UPDATE returned 0 rows - request agent_id=%s != task assigned_agent_id=%s (task_id=%s, status=%s)",
+					req.AgentID, existing.AssignedAgentID, req.TaskID, existing.Status)
 				return nil, store.ErrConflict
 			}
 			if existing.Status != model.TaskStatusDone {
+				log.Printf("[store] CompleteTask rejected: UPDATE returned 0 rows - task status=%s (not in_progress, task_id=%s)",
+					existing.Status, req.TaskID)
 				return nil, store.ErrConflict
 			}
 			t = existing
@@ -837,7 +889,7 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 	}
 	query += " and status = 'in_progress'"
 	query += `
-		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`
 
@@ -849,6 +901,7 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 		&t.Sequence,
 		&t.Title,
 		&t.Description,
+		&t.Type,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
@@ -863,7 +916,7 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 			// Either task doesn't exist, agent mismatch, or already failed.
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
@@ -874,6 +927,7 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 				&existing.Sequence,
 				&existing.Title,
 				&existing.Description,
+				&existing.Type,
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,

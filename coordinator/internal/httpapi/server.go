@@ -39,8 +39,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 
-	s.mux.HandleFunc("/v1/agents/heartbeat", s.handleAgentsHeartbeat)
-	s.mux.HandleFunc("/v1/agents", s.handleAgentsList)
+	s.mux.HandleFunc("POST /v1/agents/heartbeat", s.handleAgentsHeartbeat)
+	s.mux.HandleFunc("POST /v1/agents/request-session", s.handleAgentsRequestSession)
+	s.mux.HandleFunc("GET /v1/agents/{id}/current-task", s.handleAgentCurrentTask)
+	s.mux.HandleFunc("GET /v1/agents", s.handleAgentsList)
 
 	s.mux.HandleFunc("/v1/channels", s.handleChannels)
 	s.mux.HandleFunc("GET /v1/channels/by-name/{name}", s.handleGetChannelByName)
