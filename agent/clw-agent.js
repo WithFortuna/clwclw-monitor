@@ -1566,7 +1566,7 @@ async function main() {
 
         console.log(`[agent] new pane ID set: ${tmuxPaneId} (from target: ${newTarget})`);
         await emitEvent('agent.automation.target_set', { pane_id: tmuxPaneId, initial_target: newTarget });
-        
+
         const isAutomationTask = task.type === 'request_claude_session';
         if (isAutomationTask) {
             console.log('[agent] automation task recognized, completing it without injection.');
@@ -1581,7 +1581,7 @@ async function main() {
                 await failTask(task.id, `Inject failed for initial task: ${err.message}`).catch(console.error);
             }
         }
-        
+
         await sleep(pollSec * 1000);
         continue;
       }
@@ -1632,7 +1632,7 @@ async function main() {
           } catch (err) {
             console.error(`[agent] claim error: ${String(err?.message || err)}`);
             await sleep(pollSec * 2000);
-            break; 
+            break;
           }
         }
 
@@ -1655,7 +1655,7 @@ async function main() {
               if (!modeSwitchSuccess) throw new Error(`Failed to switch to mode: ${executionMode}`);
               await emitEvent('mode_switched', { task_id: task.id, target_mode: executionMode }, `mode_switched:${task.id}`, task.id);
             }
-            
+
             const payload = formatTaskForInjection(task);
             tmuxInject(tmuxTarget, payload, tmuxPaneId);
             await emitEvent('task.injected', { task_id: task.id, payload }, `task.injected:${task.id}`, task.id);
