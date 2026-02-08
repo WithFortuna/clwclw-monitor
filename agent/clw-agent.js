@@ -189,6 +189,15 @@ function detectTmuxTarget() {
 
 function detectTmuxPaneId() {
   // Get stable pane ID (%0, %1, etc.) that never changes even after splits
+  // Priority 1: $TMUX_PANE environment variable (ALWAYS correct)
+  // tmux sets this when the pane is created; all child processes inherit it.
+  // tmux display-message returns the FOCUSED pane, which may differ.
+  const envPaneId = (process.env.TMUX_PANE || '').trim();
+  if (envPaneId && /^%\d+$/.test(envPaneId)) {
+    return envPaneId;
+  }
+
+  // Priority 2: tmux command (fallback for non-shell contexts)
   try {
     const result = spawnSync('tmux', ['display-message', '-p', '#D'], {
       encoding: 'utf8',
@@ -209,6 +218,37 @@ function tmuxPaneIdForTarget(target) {
   if (!target) return null;
   try {
     const result = spawnSync('tmux', ['display-message', '-t', target, '-p', '#D'], {
+      encoding: 'utf8',
+
+      stdio: ['ignore', 'pipe', 'pipe'], // Capture stderr for debugging
+    });
+
+    // DEBUG: Log tmux command result
+    if (result.status !== 0) {
+      console.error(`[tmuxPaneIdForTarget] Failed to get pane ID for target: ${target}`);
+      console.error(`[tmuxPaneIdForTarget]   Exit code: ${result.status}`);
+      console.error(`[tmuxPaneIdForTarget]   Stderr: ${(result.stderr || '').trim()}`);
+      console.error(`[tmuxPaneIdForTarget]   Command: tmux display-message -t "${target}" -p '#D'`);
+    }
+
+    if (result.status === 0) {
+      const s = (result.stdout || '').trim();
+      console.error(`[tmuxPaneIdForTarget] Success: target="${target}" → pane_id="${s}"`);
+      return s || null;
+    }
+  } catch (err) {
+    console.error(`[tmuxPaneIdForTarget] Exception: ${err.message}`);
+  }
+  return null;
+}
+
+function getPaneTarget(paneId) {
+  // Get #S:#I.#P format from pane ID (for logging/debugging only)
+  // This should ONLY be used when #S:#I.#P is explicitly needed (e.g., display purposes)
+  // Connection tracking should ALWAYS use pane ID instead
+  if (!paneId) return null;
+  try {
+    const result = spawnSync('tmux', ['display-message', '-t', paneId, '-p', '#S:#I.#P'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -275,9 +315,11 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function configureStateDirForWork(tmuxTarget) {
+function configureStateDirForWork(paneIdOrTarget) {
+  // CRITICAL: Use pane ID as primary identifier (stable across pane rearrangements)
+  // Fallback to target for backward compatibility
   if (String(process.env.AGENT_STATE_DIR || '').trim()) return { label: '', dir: agentDataDir() };
-  const label = String(tmuxTarget || '').trim();
+  const label = String(paneIdOrTarget || '').trim();
   if (!label) return { label: '', dir: agentDataDir() };
   const dir = stateDirForLabel(label);
   ensureDir(dir);
@@ -1345,126 +1387,36 @@ async function main() {
         }
       }
 
-      if (!task) {
-        // Check if Claude Code is running even without a task
-        let claudeRunning = false;
-        try {
-          claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId);
-        } catch {
-          claudeRunning = false;
-        }
-
-        await heartbeat(claudeRunning ? 'running' : 'idle', '', {
-          tmux_session: tmuxSession || tmuxTarget,
-          tmux_target: tmuxTarget,
-          tmux_pane_id: tmuxPaneId,
-          subscriptions: channels,
-          work_channels: channels,
-          claude_detected: claudeRunning,
-        });
-        await sleep(pollSec * 1000);
-        continue;
-      }
-
-      const taskId = String(task.id || '').trim();
-      writeCurrentTask({
-        task_id: taskId,
-        channel_id: task.channel_id,
-        channel: claimedFromChannel,
-        title: task.title,
-        description: task.description,
-        tmux_session: tmuxSession,
-        tmux_target: tmuxTarget,
-        tmux_pane_id: tmuxPaneId,
-        claimed_at: new Date().toISOString(),
-      });
-
-      await heartbeat('running', taskId, {
-        tmux_session: tmuxSession || tmuxTarget,
-        tmux_target: tmuxTarget,
-        tmux_pane_id: tmuxPaneId,
-        subscriptions: channels,
-        work_channels: channels,
-        work_channel: claimedFromChannel,
-      });
-      await emitEvent('task.claimed', {
-        task_id: taskId,
-        channel: claimedFromChannel,
-        tmux_session: tmuxSession,
-        tmux_target: tmuxTarget,
-        tmux_pane_id: tmuxPaneId,
-        title: task.title,
-      }, `task.claimed:${taskId}`, taskId);
-
-      // Switch execution mode if specified
-      const executionMode = String(task.execution_mode || '').trim();
-      if (executionMode) {
-        console.log(`[agent] Switching to execution mode: ${executionMode}`);
-        const modeSwitchSuccess = switchToMode(tmuxTarget, executionMode, tmuxPaneId);
-
-        if (!modeSwitchSuccess) {
-          console.error(`[agent] Failed to switch to mode: ${executionMode}`);
-          await emitEvent('mode_switch_failed', {
-            task_id: taskId,
-            tmux_session: tmuxSession,
-            tmux_target: tmuxTarget,
-            tmux_pane_id: tmuxPaneId,
-            target_mode: executionMode,
-            error: 'Mode switch failed after retries',
-          }, `mode_switch_failed:${taskId}`, taskId);
-
-          // Fail the task due to mode switch failure
-          try {
-            await failTask(taskId, `Failed to switch to execution mode: ${executionMode}`);
-            console.log(`[agent] Task ${taskId} marked as failed due to mode switch failure`);
-          } catch (err) {
-            console.error(`[agent] Failed to mark task as failed: ${String(err?.message || err)}`);
-          }
-
-          // Clear current task and continue polling
-          writeCurrentTask(null);
-          await heartbeat('idle', '', {
-            tmux_session: tmuxSession || tmuxTarget,
-            tmux_target: tmuxTarget,
-            tmux_pane_id: tmuxPaneId,
+        if (!task) {
+          let claudeRunning = false;
+          try { claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId); } catch {}
+          await heartbeat(claudeRunning ? 'running' : 'idle', '', {
+            pane_id: tmuxPaneId, // PRIMARY: Stable pane identifier
+            tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId, // UI display only
             subscriptions: channels,
             work_channels: channels,
+            claude_detected: claudeRunning,
           });
-          await sleep(pollSec * 1000);
-          continue;
+        } else { // New task claimed, inject it
+          try {
+            const executionMode = String(task.execution_mode || '').trim();
+            if (executionMode) {
+              console.log(`[agent] Switching to execution mode: ${executionMode}`);
+              const modeSwitchSuccess = switchToMode(tmuxTarget, executionMode, tmuxPaneId);
+              if (!modeSwitchSuccess) throw new Error(`Failed to switch to mode: ${executionMode}`);
+              await emitEvent('mode_switched', { task_id: task.id, target_mode: executionMode }, `mode_switched:${task.id}`, task.id);
+            }
+            
+            const payload = formatTaskForInjection(task);
+            tmuxInject(tmuxTarget, payload, tmuxPaneId);
+            await emitEvent('task.injected', { task_id: task.id, payload }, `task.injected:${task.id}`, task.id);
+          } catch (err) {
+            console.error(`[agent] inject failed for task ${task.id}: ${String(err?.message || err)}`);
+            await failTask(task.id, `Task injection failed: ${err.message}`).catch(console.error);
+          }
         }
 
-        await emitEvent('mode_switched', {
-          task_id: taskId,
-          tmux_session: tmuxSession,
-          tmux_target: tmuxTarget,
-          tmux_pane_id: tmuxPaneId,
-          target_mode: executionMode,
-        }, `mode_switched:${taskId}`, taskId);
       }
-
-      try {
-        const payload = formatTaskForInjection(task);
-        tmuxInject(tmuxTarget, payload, tmuxPaneId);
-        await emitEvent('task.injected', {
-          task_id: taskId,
-          tmux_session: tmuxSession,
-          tmux_target: tmuxTarget,
-          tmux_pane_id: tmuxPaneId,
-          payload,
-        }, `task.injected:${taskId}`, taskId);
-      } catch (err) {
-        console.error(`[agent] inject failed: ${String(err?.message || err)}`);
-        await emitEvent('task.inject_failed', {
-          task_id: taskId,
-          tmux_session: tmuxSession,
-          tmux_target: tmuxTarget,
-          tmux_pane_id: tmuxPaneId,
-          error: String(err?.message || err),
-        }, `task.inject_failed:${taskId}`, taskId);
-        // Keep current-task for manual intervention; worker will stay in running state.
-      }
-
       await sleep(pollSec * 1000);
     }
   }

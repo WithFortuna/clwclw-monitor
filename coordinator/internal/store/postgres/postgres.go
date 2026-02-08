@@ -180,6 +180,22 @@ func (s *Store) ListChannels(ctx context.Context) ([]model.Channel, error) {
 	return out, nil
 }
 
+func (s *Store) GetChannelByName(ctx context.Context, name string) (model.Channel, error) {
+	var ch model.Channel
+	err := s.pool.QueryRow(ctx, `
+		select id::text, name, coalesce(description, ''), created_at
+		from public.channels
+		where name = $1
+	`, name).Scan(&ch.ID, &ch.Name, &ch.Description, &ch.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Channel{}, store.ErrNotFound
+		}
+		return model.Channel{}, mapPgErr(err)
+	}
+	return ch, nil
+}
+
 func (s *Store) CreateChain(ctx context.Context, c model.Chain) (model.Chain, error) {
 	if strings.TrimSpace(c.ChannelID) == "" {
 		return model.Chain{}, errors.New("channel_id_required")
