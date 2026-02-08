@@ -97,6 +97,7 @@ type Task struct {
 	ChannelID       string        `json:"channel_id"`
 	Title           string        `json:"title"`
 	Description     string        `json:"description,omitempty"`
+	Type            string        `json:"type,omitempty"`
 	Status          TaskStatus    `json:"status"`
 	Priority        int           `json:"priority"`
 	AssignedAgentID string        `json:"assigned_agent_id,omitempty"`

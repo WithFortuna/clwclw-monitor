@@ -161,7 +161,8 @@ function renderAgents(agents) {
     .map((a) => {
       const name = a.name || a.id || '-';
       const subs = Array.isArray(a?.meta?.subscriptions) ? a.meta.subscriptions.join(', ') : '';
-      const tmux = a?.meta?.tmux_target || a?.meta?.tmux_session || '';
+      // Display tmux info: prefer tmux_display (dynamically resolved #S:#I.#P from pane_id)
+      const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || a?.meta?.tmux_session || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
       const claudeStatus = a.claude_status || a.status || 'idle';
       return `<tr>

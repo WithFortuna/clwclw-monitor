@@ -69,10 +69,12 @@ type ClaimTaskInputRequest struct {
 
 type Store interface {
 	UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, error)
+	GetAgent(ctx context.Context, id string) (*model.Agent, error)
 	ListAgents(ctx context.Context) ([]model.Agent, error)
 
 	CreateChannel(ctx context.Context, ch model.Channel) (model.Channel, error)
 	ListChannels(ctx context.Context) ([]model.Channel, error)
+	GetChannelByName(ctx context.Context, name string) (model.Channel, error)
 
 	CreateChain(ctx context.Context, c model.Chain) (model.Chain, error)
 	GetChain(ctx context.Context, id string) (model.Chain, error)
