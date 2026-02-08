@@ -2,6 +2,32 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 작업 규칙 (Working Rules)
+
+**중요: 모든 작업은 다음 프로세스를 따라야 합니다.**
+
+1. **새로운 기능 추가 시**: 반드시 `REQUIREMENTS.md`에 요구사항을 먼저 기록
+2. **작업 시작 시**: `./tasks/` 디렉토리에 마크다운 파일로 작업 발행
+3. **작업 진행**: 체크박스(`- [ ]`, `- [x]`)로 작업 여부 트래킹
+4. **문서 작성**: 사용자가 명시적으로 요청하기 전까지 별도 문서 생성 금지
+
+**작업 파일 형식 예시** (`tasks/YYYY-MM-DD-feature-name.md`):
+```markdown
+# [Feature Name]
+
+## 요구사항
+- REQUIREMENTS.md 참조: [섹션명]
+
+## 작업 목록
+- [ ] 작업 1
+- [x] 작업 2 (완료)
+- [ ] 작업 3
+
+## 변경 파일
+- `path/to/file1.go`
+- `path/to/file2.js`
+```
+
 ## Project Overview
 
 **clwclw-monitor** is a web-based task coordination system for Claude Code agents. It extends [Claude-Code-Remote](https://github.com/JessyTsui/Claude-Code-Remote) with a centralized Go API server (Coordinator), web dashboard, and multi-agent task distribution.
@@ -21,6 +47,21 @@ The system has three main components:
 - **Task**: Work unit published to a channel; agents claim tasks in FIFO order
 - **Event**: Timeline entry representing agent activity (linked to tasks or standalone)
 - **Task Input**: Command injection into tmux sessions for remote control
+
+### Agent Status System
+
+Agents have a dual status system (see [Issue #1](https://github.com/WithFortuna/clwclw-monitor/issues/1)):
+
+1. **Worker Status** (computed from `last_seen` timestamp):
+   - `online`: Heartbeat within 30 seconds (worker process alive)
+   - `offline`: Heartbeat stale (worker process crashed/stopped)
+
+2. **Claude Status** (reported by agent):
+   - `idle`: No task assigned or not actively executing
+   - `running`: Task assigned and Claude actively executing
+   - `waiting`: Task in progress, waiting for interactive user input
+
+**Key Design:** Task claim/complete operations do NOT automatically update agent status. Agent heartbeat is the sole source of truth for Claude execution state.
 
 ## Common Commands
 

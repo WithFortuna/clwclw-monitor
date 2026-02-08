@@ -23,11 +23,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type agentsHeartbeatRequest struct {
-	AgentID       string                 `json:"agent_id"`
-	Name          string                 `json:"name"`
-	Status        model.AgentStatus      `json:"status"`
-	CurrentTaskID string                 `json:"current_task_id"`
-	Meta          map[string]any          `json:"meta"`
+	AgentID       string             `json:"agent_id"`
+	Name          string             `json:"name"`
+	Status        model.AgentStatus  `json:"status"` // Legacy: for backward compatibility
+	ClaudeStatus  model.ClaudeStatus `json:"claude_status"`
+	CurrentTaskID string             `json:"current_task_id"`
+	Meta          map[string]any     `json:"meta"`
 }
 
 func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -42,10 +43,17 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use ClaudeStatus if provided, otherwise fall back to Status for backward compatibility
+	claudeStatus := req.ClaudeStatus
+	if claudeStatus == "" && req.Status != "" {
+		claudeStatus = model.ClaudeStatus(req.Status)
+	}
+
 	a := model.Agent{
 		ID:            strings.TrimSpace(req.AgentID),
 		Name:          strings.TrimSpace(req.Name),
-		Status:        req.Status,
+		Status:        req.Status,   // Legacy field
+		ClaudeStatus:  claudeStatus, // New field
 		CurrentTaskID: strings.TrimSpace(req.CurrentTaskID),
 		Meta:          req.Meta,
 	}
@@ -61,6 +69,11 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
 
+type agentResponse struct {
+	model.Agent
+	WorkerStatus model.WorkerStatus `json:"worker_status"`
+}
+
 func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -72,7 +85,18 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list agents")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+
+	// Compute worker_status for each agent (30 second threshold = 2x heartbeat interval)
+	threshold := 30 * time.Second
+	response := make([]agentResponse, len(agents))
+	for i, a := range agents {
+		response[i] = agentResponse{
+			Agent:        a,
+			WorkerStatus: a.DerivedWorkerStatus(threshold),
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"agents": response})
 }
 
 type createChannelRequest struct {
@@ -122,12 +146,147 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type createChainRequest struct {
+	ChannelID   string            `json:"channel_id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Status      model.ChainStatus `json:"status"`
+}
+
+type updateChainRequest struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Status      model.ChainStatus `json:"status"`
+}
+
+func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
+		chains, err := s.store.ListChains(r.Context(), channelID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to list chains")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"chains": chains})
+		return
+
+	case http.MethodPost:
+		var req createChainRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+			return
+		}
+
+		chain, err := s.store.CreateChain(r.Context(), model.Chain{
+			ChannelID:   strings.TrimSpace(req.ChannelID),
+			Name:        strings.TrimSpace(req.Name),
+			Description: strings.TrimSpace(req.Description),
+			Status:      req.Status,
+		})
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == store.ErrNotFound { // e.g. channel_id not found
+				status = http.StatusNotFound
+			} else if err == store.ErrConflict { // e.g. duplicate name
+				status = http.StatusConflict
+			}
+			writeError(w, status, "invalid_request", err.Error())
+			return
+		}
+
+		s.bus.Publish("chains")
+		s.invalidateDashboardCache()
+		writeJSON(w, http.StatusCreated, map[string]any{"chain": chain})
+		return
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+}
+
+func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
+	chainID := strings.TrimSpace(r.PathValue("id"))
+	if chainID == "" {
+		writeError(w, http.StatusBadRequest, "chain_id_required", "chain ID is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		chain, err := s.store.GetChain(r.Context(), chainID)
+		if err != nil {
+			if err == store.ErrNotFound {
+				writeError(w, http.StatusNotFound, "not_found", "chain not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal", "failed to get chain")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"chain": chain})
+		return
+
+	case http.MethodPut:
+		var req updateChainRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+			return
+		}
+
+		chain, err := s.store.UpdateChain(r.Context(), model.Chain{
+			ID:          chainID,
+			Name:        strings.TrimSpace(req.Name),
+			Description: strings.TrimSpace(req.Description),
+			Status:      req.Status,
+		})
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == store.ErrNotFound {
+				status = http.StatusNotFound
+			} else if err == store.ErrConflict {
+				status = http.StatusConflict
+			}
+			writeError(w, status, "invalid_request", err.Error())
+			return
+		}
+
+		s.bus.Publish("chains")
+		s.invalidateDashboardCache()
+		writeJSON(w, http.StatusOK, map[string]any{"chain": chain})
+		return
+
+	case http.MethodDelete:
+		err := s.store.DeleteChain(r.Context(), chainID)
+		if err != nil {
+			if err == store.ErrNotFound {
+				writeError(w, http.StatusNotFound, "not_found", "chain not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal", "failed to delete chain")
+			return
+		}
+
+		s.bus.Publish("chains")
+		s.invalidateDashboardCache()
+		w.WriteHeader(http.StatusNoContent)
+		return
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+}
+
 type createTaskRequest struct {
-	ChannelID   string          `json:"channel_id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Priority    int             `json:"priority"`
-	Status      model.TaskStatus `json:"status"`
+	ChannelID     string              `json:"channel_id"`
+	ChainID       string              `json:"chain_id"` // New field for chain association
+	Sequence      int                 `json:"sequence"` // New field for order within a chain
+	Title         string              `json:"title"`
+	Description   string              `json:"description"`
+	Priority      int                 `json:"priority"`
+	Status        model.TaskStatus    `json:"status"`
+	ExecutionMode model.ExecutionMode `json:"execution_mode,omitempty"` // Claude Code execution mode
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +295,9 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		filter := store.TaskFilter{}
 		if v := strings.TrimSpace(r.URL.Query().Get("channel_id")); v != "" {
 			filter.ChannelID = v
+		}
+		if v := strings.TrimSpace(r.URL.Query().Get("chain_id")); v != "" { // New filter for chain_id
+			filter.ChainID = v
 		}
 		if v := strings.TrimSpace(r.URL.Query().Get("status")); v != "" {
 			filter.Status = model.TaskStatus(v)
@@ -155,17 +317,38 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Check if ChainID is empty, if so, create a new chain for this task
+		if strings.TrimSpace(req.ChainID) == "" {
+			newChain, err := s.store.CreateChain(r.Context(), model.Chain{
+				ChannelID:   strings.TrimSpace(req.ChannelID),
+				Name:        fmt.Sprintf("Standalone Chain for %s", strings.TrimSpace(req.Title)),
+				Description: fmt.Sprintf("Auto-created chain for single task: %s", strings.TrimSpace(req.Title)),
+				Status:      model.ChainStatusQueued,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", fmt.Sprintf("failed to create chain for task: %v", err))
+				return
+			}
+			req.ChainID = newChain.ID
+			req.Sequence = 1 // First and only task in this new chain
+		}
+
 		t, err := s.store.CreateTask(r.Context(), model.Task{
-			ChannelID:   strings.TrimSpace(req.ChannelID),
-			Title:       strings.TrimSpace(req.Title),
-			Description: strings.TrimSpace(req.Description),
-			Priority:    req.Priority,
-			Status:      req.Status,
+			ChannelID:     strings.TrimSpace(req.ChannelID),
+			ChainID:       strings.TrimSpace(req.ChainID),
+			Sequence:      req.Sequence,
+			Title:         strings.TrimSpace(req.Title),
+			Description:   strings.TrimSpace(req.Description),
+			Priority:      req.Priority,
+			Status:        req.Status,
+			ExecutionMode: req.ExecutionMode,
 		})
 		if err != nil {
 			status := http.StatusBadRequest
-			if err == store.ErrNotFound {
+			if err == store.ErrNotFound { // e.g. channel_id or chain_id not found
 				status = http.StatusNotFound
+			} else if err == store.ErrConflict { // e.g. duplicate sequence in chain
+				status = http.StatusConflict
 			}
 			writeError(w, status, "invalid_request", err.Error())
 			return

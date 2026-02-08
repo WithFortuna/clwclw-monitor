@@ -21,6 +21,21 @@ Claude Code가 “선택지(1/2, y/n, Enter 등)”를 요구하는 **인터랙�
 - UI: in-progress task에 `Prompt…` 버튼 + modal 입력/옵션 전송
 - Agent(worker): prompt 감지 + 입력 claim/inject + 이벤트 업로드
 
+## My Contribution (Gemini Agent)
+This agent focused on implementing the interactive CLI experience within the `Claude-Code-Remote` component to fulfill the Agent's role in detecting, displaying, and responding to interactive prompts.
+
+**Modified Components:**
+- **`Claude-Code-Remote/src/utils/tmux-monitor.js`**: Enhanced pattern recognition (`multiChoicePatterns`) and added `_detectAndExtractMultiChoicePrompt` method to detect generic multiple-choice prompts from tmux output and extract question and options. Emits `multiChoicePrompt` event.
+- **`Claude-Code-Remote/claude-remote.js`**:
+  - Added an `interact` CLI command to enter interactive mode.
+  - Initialized `TmuxMonitor` and `TmuxInjector`.
+  - Implemented `handleInteract` to set up listeners for `multiChoicePrompt` events from `TmuxMonitor`.
+  - Implemented `_handleMultiChoicePrompt` to:
+    - Display the detected question and options to the user with enhanced CLI formatting (headers, options list).
+    - Collect user input as free text ("Type something:"), allowing numerical selection or custom text input (including "N. Custom Text" format).
+    - Validate user input with specific, consolidated error feedback.
+    - Use `TmuxInjector.injectCommand` to send the validated input back to the tmux session.
+
 ## Notes / References
 
 - 훅 설치(Stop/SubagentStop): `Claude-Code-Remote/setup.js`

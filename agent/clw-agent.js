@@ -189,7 +189,6 @@ function detectTmuxTarget() {
 
 function detectTmuxPaneId() {
   // Get stable pane ID (%0, %1, etc.) that never changes even after splits
-
   // Priority 1: $TMUX_PANE environment variable (ALWAYS correct)
   // tmux sets this when the pane is created; all child processes inherit it.
   // tmux display-message returns the FOCUSED pane, which may differ.
@@ -220,6 +219,7 @@ function tmuxPaneIdForTarget(target) {
   try {
     const result = spawnSync('tmux', ['display-message', '-t', target, '-p', '#D'], {
       encoding: 'utf8',
+
       stdio: ['ignore', 'pipe', 'pipe'], // Capture stderr for debugging
     });
 
@@ -1415,6 +1415,7 @@ async function main() {
             await failTask(task.id, `Task injection failed: ${err.message}`).catch(console.error);
           }
         }
+
       }
       await sleep(pollSec * 1000);
     }

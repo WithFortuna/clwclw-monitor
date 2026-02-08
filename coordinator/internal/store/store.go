@@ -8,14 +8,15 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("not_found")
-	ErrConflict      = errors.New("conflict")
-	ErrNoQueuedTasks = errors.New("no_queued_tasks")
+	ErrNotFound        = errors.New("not_found")
+	ErrConflict        = errors.New("conflict")
+	ErrNoQueuedTasks   = errors.New("no_queued_tasks")
 	ErrNoPendingInputs = errors.New("no_pending_inputs")
 )
 
 type TaskFilter struct {
 	ChannelID string
+	ChainID   string // New field for filtering by chain
 	Status    model.TaskStatus
 	Limit     int
 }
@@ -27,10 +28,10 @@ type EventFilter struct {
 }
 
 type ClaimTaskRequest struct {
-	AgentID         string `json:"agent_id"`
-	ChannelID       string `json:"channel_id,omitempty"`
-	Channel         string `json:"channel,omitempty"`
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+	AgentID        string `json:"agent_id"`
+	ChannelID      string `json:"channel_id,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type CompleteTaskRequest struct {
@@ -72,6 +73,12 @@ type Store interface {
 
 	CreateChannel(ctx context.Context, ch model.Channel) (model.Channel, error)
 	ListChannels(ctx context.Context) ([]model.Channel, error)
+
+	CreateChain(ctx context.Context, c model.Chain) (model.Chain, error)
+	GetChain(ctx context.Context, id string) (model.Chain, error)
+	ListChains(ctx context.Context, channelID string) ([]model.Chain, error)
+	UpdateChain(ctx context.Context, c model.Chain) (model.Chain, error)
+	DeleteChain(ctx context.Context, id string) error
 
 	CreateTask(ctx context.Context, t model.Task) (model.Task, error)
 	ListTasks(ctx context.Context, f TaskFilter) ([]model.Task, error)

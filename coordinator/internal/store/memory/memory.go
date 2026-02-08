@@ -16,6 +16,7 @@ type Store struct {
 
 	agents   map[string]model.Agent
 	channels map[string]model.Channel
+	chains   map[string]model.Chain // New field for chains
 	tasks    map[string]model.Task
 	events   map[string]model.Event
 	inputs   map[string]model.TaskInput
@@ -29,14 +30,15 @@ type Store struct {
 
 func NewStore() *Store {
 	return &Store{
-		agents:   make(map[string]model.Agent),
-		channels: make(map[string]model.Channel),
-		tasks:    make(map[string]model.Task),
-		events:   make(map[string]model.Event),
-		inputs:   make(map[string]model.TaskInput),
+		agents:    make(map[string]model.Agent),
+		channels:  make(map[string]model.Channel),
+		chains:    make(map[string]model.Chain), // Initialize chains map
+		tasks:     make(map[string]model.Task),
+		events:    make(map[string]model.Event),
+		inputs:    make(map[string]model.TaskInput),
 		claimIdem: make(map[string]string),
 		inputIdem: make(map[string]string),
-		idem:     make(map[string]struct{}),
+		idem:      make(map[string]struct{}),
 	}
 }
 
@@ -57,6 +59,9 @@ func (s *Store) UpsertAgent(_ context.Context, a model.Agent) (model.Agent, erro
 		if a.Status != "" {
 			existing.Status = a.Status
 		}
+		if a.ClaudeStatus != "" {
+			existing.ClaudeStatus = a.ClaudeStatus
+		}
 		if a.CurrentTaskID != "" {
 			existing.CurrentTaskID = a.CurrentTaskID
 		}
@@ -71,6 +76,9 @@ func (s *Store) UpsertAgent(_ context.Context, a model.Agent) (model.Agent, erro
 
 	if a.Status == "" {
 		a.Status = model.AgentStatusIdle
+	}
+	if a.ClaudeStatus == "" {
+		a.ClaudeStatus = model.ClaudeStatusIdle
 	}
 	a.LastSeen = now
 	a.CreatedAt = now
@@ -131,6 +139,107 @@ func (s *Store) ListChannels(_ context.Context) ([]model.Channel, error) {
 	return out, nil
 }
 
+func (s *Store) CreateChain(_ context.Context, c model.Chain) (model.Chain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(c.ChannelID) == "" {
+		return model.Chain{}, errWithCode("channel_id_required")
+	}
+	if strings.TrimSpace(c.Name) == "" {
+		return model.Chain{}, errWithCode("name_required")
+	}
+	if _, ok := s.channels[c.ChannelID]; !ok {
+		return model.Chain{}, store.ErrNotFound
+	}
+
+	for _, existing := range s.chains {
+		if existing.ChannelID == c.ChannelID && strings.EqualFold(existing.Name, c.Name) {
+			return model.Chain{}, store.ErrConflict
+		}
+	}
+
+	now := time.Now().UTC()
+	c.ID = newID()
+	if c.Status == "" {
+		c.Status = model.ChainStatusQueued
+	}
+	c.CreatedAt = now
+	c.UpdatedAt = now
+	s.chains[c.ID] = c
+	return c, nil
+}
+
+func (s *Store) GetChain(_ context.Context, id string) (model.Chain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.chains[id]
+	if !ok {
+		return model.Chain{}, store.ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *Store) ListChains(_ context.Context, channelID string) ([]model.Chain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]model.Chain, 0, len(s.chains))
+	for _, c := range s.chains {
+		if channelID != "" && c.ChannelID != channelID {
+			continue
+		}
+		out = append(out, c)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (s *Store) UpdateChain(_ context.Context, c model.Chain) (model.Chain, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.chains[c.ID]
+	if !ok {
+		return model.Chain{}, store.ErrNotFound
+	}
+
+	if strings.TrimSpace(c.Name) != "" && !strings.EqualFold(existing.Name, c.Name) {
+		for _, other := range s.chains {
+			if other.ID != c.ID && other.ChannelID == c.ChannelID && strings.EqualFold(other.Name, c.Name) {
+				return model.Chain{}, store.ErrConflict
+			}
+		}
+		existing.Name = c.Name
+	}
+
+	if c.Description != "" {
+		existing.Description = c.Description
+	}
+	if c.Status != "" {
+		existing.Status = c.Status
+	}
+
+	existing.UpdatedAt = time.Now().UTC()
+	s.chains[existing.ID] = existing
+	return existing, nil
+}
+
+func (s *Store) DeleteChain(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.chains[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(s.chains, id)
+	return nil
+}
+
 func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,6 +252,11 @@ func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) 
 	}
 	if _, ok := s.channels[t.ChannelID]; !ok {
 		return model.Task{}, store.ErrNotFound
+	}
+	if strings.TrimSpace(t.ChainID) != "" {
+		if _, ok := s.chains[t.ChainID]; !ok {
+			return model.Task{}, errWithCode("chain_id_not_found")
+		}
 	}
 
 	now := time.Now().UTC()
@@ -163,6 +277,9 @@ func (s *Store) ListTasks(_ context.Context, f store.TaskFilter) ([]model.Task, 
 	out := make([]model.Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
 		if f.ChannelID != "" && t.ChannelID != f.ChannelID {
+			continue
+		}
+		if f.ChainID != "" && t.ChainID != f.ChainID { // New filter for ChainID
 			continue
 		}
 		if f.Status != "" && t.Status != f.Status {
@@ -214,47 +331,112 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 		return nil, errWithCode("channel_id_or_channel_required")
 	}
 
-	var queued []model.Task
+	// First, try to find a task within an active chain
+	var eligibleChainTasks []model.Task
 	for _, t := range s.tasks {
-		if t.ChannelID != channelID {
+		if t.ChannelID != channelID || t.Status != model.TaskStatusQueued || t.ChainID == "" {
 			continue
 		}
-		if t.Status != model.TaskStatusQueued {
+
+		chain, ok := s.chains[t.ChainID]
+		if !ok || (chain.Status != model.ChainStatusQueued && chain.Status != model.ChainStatusInProgress) {
 			continue
 		}
-		queued = append(queued, t)
+
+		// Check if this task is the next in sequence for its chain
+		if t.Sequence == 1 {
+			// If sequence is 1, it's eligible if no other task in this chain is in progress
+			hasInProgressInChain := false
+			for _, otherTask := range s.tasks {
+				if otherTask.ChainID == t.ChainID && otherTask.Status == model.TaskStatusInProgress {
+					hasInProgressInChain = true
+					break
+				}
+			}
+			if !hasInProgressInChain {
+				eligibleChainTasks = append(eligibleChainTasks, t)
+			}
+		} else {
+			// For tasks with sequence > 1, check if previous task is done
+			prevTaskDone := false
+			for _, otherTask := range s.tasks {
+				if otherTask.ChainID == t.ChainID && otherTask.Sequence == t.Sequence-1 && otherTask.Status == model.TaskStatusDone {
+					prevTaskDone = true
+					break
+				}
+			}
+			if prevTaskDone {
+				eligibleChainTasks = append(eligibleChainTasks, t)
+			}
+		}
 	}
-	if len(queued) == 0 {
+
+	var taskToClaim *model.Task
+	if len(eligibleChainTasks) > 0 {
+		// Sort eligible chain tasks: by chain creation time (oldest first), then by task sequence
+		sort.Slice(eligibleChainTasks, func(i, j int) bool {
+			chainI := s.chains[eligibleChainTasks[i].ChainID]
+			chainJ := s.chains[eligibleChainTasks[j].ChainID]
+			if chainI.CreatedAt.Before(chainJ.CreatedAt) {
+				return true
+			}
+			if chainI.CreatedAt.After(chainJ.CreatedAt) {
+				return false
+			}
+			return eligibleChainTasks[i].Sequence < eligibleChainTasks[j].Sequence
+		})
+		taskToClaim = &eligibleChainTasks[0]
+	} else {
+		// If no eligible chain tasks, find oldest queued non-chain task
+		var queuedNonChainTasks []model.Task
+		for _, t := range s.tasks {
+			if t.ChannelID == channelID && t.Status == model.TaskStatusQueued && t.ChainID == "" {
+				queuedNonChainTasks = append(queuedNonChainTasks, t)
+			}
+		}
+		if len(queuedNonChainTasks) > 0 {
+			sort.Slice(queuedNonChainTasks, func(i, j int) bool {
+				return queuedNonChainTasks[i].CreatedAt.Before(queuedNonChainTasks[j].CreatedAt)
+			})
+			taskToClaim = &queuedNonChainTasks[0]
+		}
+	}
+
+	if taskToClaim == nil {
 		return nil, store.ErrNoQueuedTasks
 	}
 
-	sort.Slice(queued, func(i, j int) bool {
-		return queued[i].CreatedAt.Before(queued[j].CreatedAt)
-	})
-
-	t := queued[0]
 	now := time.Now().UTC()
-	t.Status = model.TaskStatusInProgress
-	t.AssignedAgentID = req.AgentID
-	t.ClaimedAt = &now
-	t.UpdatedAt = now
-	s.tasks[t.ID] = t
+	taskToClaim.Status = model.TaskStatusInProgress
+	taskToClaim.AssignedAgentID = req.AgentID
+	taskToClaim.ClaimedAt = &now
+	taskToClaim.UpdatedAt = now
+	s.tasks[taskToClaim.ID] = *taskToClaim
+
+	// Update chain status if this is the first task of a chain
+	if taskToClaim.ChainID != "" {
+		chain := s.chains[taskToClaim.ChainID]
+		if chain.Status == model.ChainStatusQueued {
+			chain.Status = model.ChainStatusInProgress
+			chain.UpdatedAt = now
+			s.chains[chain.ID] = chain
+		}
+	}
 
 	if idemKey != "" {
 		key := req.AgentID + ":" + idemKey
-		s.claimIdem[key] = t.ID
+		s.claimIdem[key] = taskToClaim.ID
 	}
 
-	// Optional: also update agent's current task if the agent exists.
-	if a, ok := s.agents[req.AgentID]; ok {
-		a.CurrentTaskID = t.ID
-		a.Status = model.AgentStatusRunning
-		a.LastSeen = now
-		a.UpdatedAt = now
-		s.agents[a.ID] = a
+	// Update agent's current_task_id (task claimed)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
+	if agent, ok := s.agents[req.AgentID]; ok {
+		agent.CurrentTaskID = taskToClaim.ID
+		agent.UpdatedAt = now
+		s.agents[req.AgentID] = agent
 	}
 
-	return &t, nil
+	return taskToClaim, nil
 }
 
 func (s *Store) AssignTask(_ context.Context, req store.AssignTaskRequest) (*model.Task, error) {
@@ -294,13 +476,12 @@ func (s *Store) AssignTask(_ context.Context, req store.AssignTaskRequest) (*mod
 	t.UpdatedAt = now
 	s.tasks[t.ID] = t
 
-	// Optional: update agent's current task if the agent exists.
-	if a, ok := s.agents[req.AgentID]; ok {
-		a.CurrentTaskID = t.ID
-		a.Status = model.AgentStatusRunning
-		a.LastSeen = now
-		a.UpdatedAt = now
-		s.agents[a.ID] = a
+	// Update agent's current_task_id (task assigned)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
+	if agent, ok := s.agents[req.AgentID]; ok {
+		agent.CurrentTaskID = t.ID
+		agent.UpdatedAt = now
+		s.agents[req.AgentID] = agent
 	}
 
 	return &t, nil
@@ -338,19 +519,17 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 		return nil, store.ErrConflict
 	}
 
+	// Clear agent's current_task_id (task is complete)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
 	if agentID != "" {
-		if a, ok := s.agents[agentID]; ok {
-			if a.CurrentTaskID == t.ID {
-				a.CurrentTaskID = ""
-			}
-			a.Status = model.AgentStatusIdle
-			a.LastSeen = now
-			a.UpdatedAt = now
-			s.agents[a.ID] = a
+		if agent, ok := s.agents[agentID]; ok {
+			agent.CurrentTaskID = ""
+			agent.UpdatedAt = now
+			s.agents[agentID] = agent
 		}
 	}
 
@@ -387,19 +566,17 @@ func (s *Store) FailTask(_ context.Context, req store.FailTaskRequest) (*model.T
 		return nil, store.ErrConflict
 	}
 
+	// Clear agent's current_task_id (task failed)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
 	if agentID != "" {
-		if a, ok := s.agents[agentID]; ok {
-			if a.CurrentTaskID == t.ID {
-				a.CurrentTaskID = ""
-			}
-			a.Status = model.AgentStatusIdle
-			a.LastSeen = now
-			a.UpdatedAt = now
-			s.agents[a.ID] = a
+		if agent, ok := s.agents[agentID]; ok {
+			agent.CurrentTaskID = ""
+			agent.UpdatedAt = now
+			s.agents[agentID] = agent
 		}
 	}
 

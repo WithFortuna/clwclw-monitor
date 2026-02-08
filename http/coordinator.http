@@ -1,0 +1,252 @@
+@COORDINATOR_BASE_URL = http://localhost:8080
+
+#
+# Health Check
+#
+GET {{COORDINATOR_BASE_URL}}/health
+
+###
+
+#
+# Agent Heartbeat
+#
+# Update agent status and metadata (upsert)
+POST {{COORDINATOR_BASE_URL}}/v1/agents/heartbeat
+Content-Type: application/json
+
+{
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "name": "my-claude-agent-01",
+  "claude_status": "idle",
+  "current_task_id": "",
+  "meta": {
+    "version": "1.0.0",
+    "os": "darwin"
+  }
+}
+
+###
+
+#
+# List Agents
+#
+GET {{COORDINATOR_BASE_URL}}/v1/agents
+
+###
+
+#
+# List Channels
+#
+GET {{COORDINATOR_BASE_URL}}/v1/channels
+
+###
+
+#
+# Create Channel
+#
+POST {{COORDINATOR_BASE_URL}}/v1/channels
+Content-Type: application/json
+
+{
+  "name": "default-channel",
+  "description": "Default channel for general tasks"
+}
+
+###
+
+#
+# List Chains (optional: filter by channel_id)
+#
+GET {{COORDINATOR_BASE_URL}}/v1/chains?channel_id=9c2b4c1a-2d83-4a7f-9e0c-8d6b1f2a3e4d
+
+###
+
+#
+# Create Chain
+#
+POST {{COORDINATOR_BASE_URL}}/v1/chains
+Content-Type: application/json
+
+{
+  "channel_id": "9c2b4c1a-2d83-4a7f-9e0c-8d6b1f2a3e4d",
+  "name": "onboarding-flow",
+  "description": "Chain of tasks for new user onboarding",
+  "status": "queued"
+}
+
+###
+
+#
+# Get Chain by ID
+#
+GET {{COORDINATOR_BASE_URL}}/v1/chains/b8c1a2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d
+
+###
+
+#
+# Update Chain by ID
+#
+PUT {{COORDINATOR_BASE_URL}}/v1/chains/b8c1a2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d
+Content-Type: application/json
+
+{
+  "name": "onboarding-flow-v2",
+  "description": "Updated onboarding process",
+  "status": "in_progress"
+}
+
+###
+
+#
+# Delete Chain by ID
+#
+DELETE {{COORDINATOR_BASE_URL}}/v1/chains/b8c1a2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d
+
+###
+
+#
+# List Tasks (optional: filter by channel_id, chain_id, status)
+#
+GET {{COORDINATOR_BASE_URL}}/v1/tasks?channel_id=9c2b4c1a-2d83-4a7f-9e0c-8d6b1f2a3e4d&status=queued
+
+###
+
+#
+# Create Task
+#
+POST {{COORDINATOR_BASE_URL}}/v1/tasks
+Content-Type: application/json
+
+{
+  "channel_id": "9c2b4c1a-2d83-4a7f-9e0c-8d6b1f2a3e4d",
+  "chain_id": "b8c1a2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+  "sequence": 1,
+  "title": "Initial setup",
+  "description": "Perform initial environment setup for the new user.",
+  "priority": 10,
+  "status": "queued"
+}
+
+###
+
+#
+# Claim Task
+#
+POST {{COORDINATOR_BASE_URL}}/v1/tasks/claim
+Content-Type: application/json
+
+{
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "channel_id": "9c2b4c1a-2d83-4a7f-9e0c-8d6b1f2a3e4d",
+  "idempotency_key": "unique-claim-key-123"
+}
+
+###
+
+#
+# Assign Task
+#
+POST {{COORDINATOR_BASE_URL}}/v1/tasks/assign
+Content-Type: application/json
+
+{
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "idempotency_key": "unique-assign-key-456"
+}
+
+###
+
+#
+# Complete Task
+#
+POST {{COORDINATOR_BASE_URL}}/v1/tasks/complete
+Content-Type: application/json
+
+{
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "idempotency_key": "unique-complete-key-789"
+}
+
+###
+
+#
+# Fail Task
+#
+POST {{COORDINATOR_BASE_URL}}/v1/tasks/fail
+Content-Type: application/json
+
+{
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "reason": "Failed to connect to external service.",
+  "idempotency_key": "unique-fail-key-012"
+}
+
+###
+
+#
+# Create Task Input
+#
+POST {{COORDINATOR_BASE_URL}}/v1/task_inputs
+Content-Type: application/json
+
+{
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "kind": "text",
+  "text": "Hello, this is input for the agent.",
+  "send_enter": true,
+  "idempotency_key": "unique-input-key-111"
+}
+
+###
+
+#
+# Claim Task Input
+#
+POST {{COORDINATOR_BASE_URL}}/v1/task_inputs/claim
+Content-Type: application/json
+
+{
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e"
+}
+
+###
+
+#
+# List Events (optional: filter by agent_id, task_id, limit)
+#
+GET {{COORDINATOR_BASE_URL}}/v1/events?agent_id=92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e&limit=10
+
+###
+
+#
+# Create Event
+#
+POST {{COORDINATOR_BASE_URL}}/v1/events
+Content-Type: application/json
+
+{
+  "agent_id": "92f75a7b-3b0d-4f1b-8c7a-5b1b4d0b2e3e",
+  "task_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "type": "log_message",
+  "payload": {
+    "level": "info",
+    "message": "Task processing started."
+  },
+  "idempotency_key": "unique-event-key-222"
+}
+
+###
+
+#
+# SSE Stream for Dashboard Updates
+#
+GET {{COORDINATOR_BASE_URL}}/v1/stream
+Accept: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no

@@ -1,0 +1,18 @@
+### curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer devtoken" -d '{"name": "test-channel", "description": "A channel for testing"}' http://localhost:8080/channels              │
+POST localhost:8080/channels
+Authorization: Bearer devtoken
+Content-Type: application/json
+
+{
+  "name": "test-channel",
+  "description": "A channel for testing"
+}
+
+### get channels
+GET localhost:8080/v1/channels
+Authorization: Bearer devtoken
+
+
+
+
+
