@@ -99,6 +99,116 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agents": response})
 }
 
+type requestSessionRequest struct {
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+}
+
+func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	var req requestSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	channelID := strings.TrimSpace(req.ChannelID)
+	channelName := strings.TrimSpace(req.ChannelName)
+
+	// If ID is missing, try to find it by name.
+	if channelID == "" && channelName != "" {
+		ch, err := s.store.GetChannelByName(r.Context(), channelName)
+		if err != nil {
+			if err == store.ErrNotFound {
+				writeError(w, http.StatusNotFound, "channel_not_found", fmt.Sprintf("channel with name '%s' not found", channelName))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal", "failed to get channel by name")
+			return
+		}
+		channelID = ch.ID
+	}
+
+	if channelID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "channel_id or channel_name is required")
+		return
+	}
+
+	// This creates a special task that signals headless agents to prompt for setup.
+	task, err := s.store.CreateTask(r.Context(), model.Task{
+		ChannelID:   channelID,
+		Title:       "Agent Session Request",
+		Description: "Automatic request for an agent on this channel to start a new Claude session.",
+		Type:        "request_claude_session",
+		Status:      model.TaskStatusQueued,
+		Priority:    100, // High priority
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", fmt.Sprintf("failed to create session request task: %v", err))
+		return
+	}
+
+	s.bus.Publish("tasks")
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusCreated, map[string]any{"task": task})
+}
+
+func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	agentID := strings.TrimSpace(r.PathValue("id"))
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent ID is required")
+		return
+	}
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// If agent has no current task, return 404
+	if agent.CurrentTaskID == "" {
+		writeError(w, http.StatusNotFound, "no_current_task", "agent has no current task")
+		return
+	}
+
+	// Fetch the task details
+	tasks, err := s.store.ListTasks(r.Context(), store.TaskFilter{})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
+		return
+	}
+
+	var currentTask *model.Task
+	for _, t := range tasks {
+		if t.ID == agent.CurrentTaskID {
+			currentTask = &t
+			break
+		}
+	}
+
+	if currentTask == nil {
+		// Task ID exists but task not found (inconsistent state)
+		writeError(w, http.StatusNotFound, "task_not_found", "current task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"task": currentTask})
+}
+
 type createChannelRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -144,6 +254,31 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+}
+
+func (s *Server) handleGetChannelByName(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "channel_name_required", "channel name is required")
+		return
+	}
+
+	channel, err := s.store.GetChannelByName(r.Context(), name)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "channel not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", fmt.Sprintf("failed to get channel by name: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"channel": channel})
 }
 
 type createChainRequest struct {

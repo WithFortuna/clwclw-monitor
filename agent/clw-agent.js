@@ -53,6 +53,8 @@ function usage() {
   node agent/clw-agent.js heartbeat
   node agent/clw-agent.js hook <completed|waiting>
   node agent/clw-agent.js run
+  node agent/clw-agent.js auto-start --session-name <name> --command <command>
+  node agent/clw-agent.js request-session --channel <name>
   node agent/clw-agent.js work --channel <name> --tmux-target <target>
     # multiple channels: --channel "backend-domain,notify"
     # target examples: "claude-code", "claude-code:1", "claude-code:1.0"
@@ -366,6 +368,44 @@ function configureStateDirForHook(detectedTarget) {
   return { label: full, dir: fullDir };
 }
 
+async function getJson(pathname) {
+  const url = new URL(coordinatorBaseUrl() + pathname);
+  const lib = url.protocol === 'https:' ? https : http;
+  const options = {
+    protocol: url.protocol,
+    hostname: url.hostname,
+    port: url.port || (url.protocol === 'https:' ? 443 : 80),
+    path: url.pathname + url.search,
+    method: 'GET',
+    headers: coordinatorHeaders(),
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = lib.request(options, (res) => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (buf += chunk));
+      res.on('end', () => {
+        let parsed = null;
+        try {
+          parsed = buf ? JSON.parse(buf) : {};
+        } catch {
+          parsed = null;
+        }
+        const result = { statusCode: res.statusCode || 0, body: parsed, raw: buf };
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`GET ${pathname} failed: ${res.statusCode} ${buf}`));
+        } else {
+          resolve(result.body);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 async function postJson(pathname, body) {
   const result = await postJsonResult(pathname, body);
   if (result.statusCode < 200 || result.statusCode >= 300) {
@@ -456,33 +496,48 @@ function runLegacyHook(type) {
   return result.status ?? 1;
 }
 
-function currentTaskPath() {
-  return path.join(agentDataDir(), 'current-task.json');
-}
-
-function readCurrentTask() {
-  const file = currentTaskPath();
-  if (!fs.existsSync(file)) return null;
+async function fetchCurrentTaskFromCoordinator() {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
+    const agentId = getOrCreateAgentId();
+    const result = await getJson(`/v1/agents/${agentId}/current-task`);
+    return result?.task || null;
+  } catch (err) {
+    const errMsg = String(err?.message || err);
+
+    // 404 means no current task (expected case)
+    if (errMsg.includes('404')) {
+      return null;
+    }
+
+    // ECONNREFUSED = Coordinator not running
+    if (errMsg.includes('ECONNREFUSED') || errMsg.includes('connect')) {
+      console.error(`[agent] ⚠️  Coordinator not running at ${coordinatorBaseUrl()}`);
+      console.error(`[agent] ⚠️  Please start coordinator: go run ./coordinator/cmd/coordinator`);
+    } else {
+      console.error(`[agent] fetch current task failed: ${errMsg}`);
+    }
+
     return null;
   }
 }
 
-function writeCurrentTask(task) {
-  const dir = agentDataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(currentTaskPath(), JSON.stringify(task, null, 2), 'utf8');
-}
-
-function clearCurrentTask() {
-  const file = currentTaskPath();
-  if (fs.existsSync(file)) fs.unlinkSync(file);
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readUserInput(promptText) {
+  const readline = require('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
 }
 
 function parseFlag(args, name) {
@@ -514,9 +569,25 @@ async function completeTask(taskId) {
     idempotency_key: `hook:${taskId}:${Date.now()}`,
   });
 
-  if (res.statusCode === 200 && res.body && res.body.task) return res.body.task;
-  if (res.statusCode === 409) return null; // conflict; ignore
-  if (res.statusCode === 404) return null;
+  if (res.statusCode === 200 && res.body && res.body.task) {
+    console.log(`[agent] CompleteTask API: 200 OK - task ${taskId} marked as done`);
+    return res.body.task;
+  }
+
+  if (res.statusCode === 409) {
+    console.error(`[agent] CompleteTask API: 409 Conflict - task_id=${taskId}, agent_id=${agentId}`);
+    console.error(`[agent] Coordinator rejected completion (current_task_id mismatch or task already done)`);
+    console.error(`[agent] Response: ${res.raw}`);
+    return null;
+  }
+
+  if (res.statusCode === 404) {
+    console.error(`[agent] CompleteTask API: 404 Not Found - task_id=${taskId}`);
+    console.error(`[agent] Task doesn't exist or agent not assigned`);
+    return null;
+  }
+
+  console.error(`[agent] CompleteTask API: ${res.statusCode} - unexpected error`);
   throw new Error(`complete failed: ${res.statusCode} ${res.raw}`);
 }
 
@@ -1041,6 +1112,104 @@ function switchToMode(target, targetMode, paneId = '', maxRetries = 9) {
   return false;
 }
 
+function createTmuxSessionAndStartClaudeCode(sessionName, command) {
+  if (!sessionName || !command) {
+    console.error('[auto-start] --session-name and --command are required.');
+    emitEvent('agent.automation.error', { error: 'Session name or command not provided for auto-start.' }).catch(console.error);
+    return;
+  }
+
+  const sessionExists = tmuxHasSession(sessionName);
+
+  if (!sessionExists) {
+    console.log(`[auto-start] Creating new detached tmux session: ${sessionName}`);
+    const result = spawnSync('tmux', ['new-session', '-d', '-s', sessionName], {
+      stdio: 'inherit',
+      encoding: 'utf8',
+    });
+    if (result.status !== 0) {
+      console.error(`[auto-start] Failed to create tmux session: ${sessionName}`);
+      if (result.stderr) {
+        console.error(result.stderr);
+      }
+      emitEvent('agent.tmux.session.create_failed', { session_name: sessionName, error: result.stderr || 'Unknown error' }).catch(console.error);
+      return;
+    }
+    console.log(`[auto-start] Session ${sessionName} created.`);
+    emitEvent('agent.tmux.session.created', { session_name: sessionName }).catch(console.error);
+  } else {
+    console.log(`[auto-start] Attaching to existing tmux session: ${sessionName}`);
+    emitEvent('agent.tmux.session.existing', { session_name: sessionName }).catch(console.error);
+  }
+
+  console.log(`[auto-start] Sending command to session ${sessionName}: ${command}`);
+  try {
+    // Send the command to the session's first window (target: sessionName)
+    // The command is sent with 'enter: true' to execute it.
+    tmuxSend(sessionName, command, { enter: true });
+    console.log('[auto-start] Command sent successfully.');
+    emitEvent('agent.command.sent', { session_name: sessionName, command: command }).catch(console.error);
+    console.log('\n--------------------------------------------------');
+    console.log('CLAUDE CODE SESSION STARTED IN TMUX (BACKGROUND)');
+    console.log(`To view and interact with the session, run:`);
+    console.log(`tmux attach -t ${sessionName}`);
+    console.log('--------------------------------------------------\n');
+  } catch (err) {
+    console.error(`[auto-start] Failed to send command to tmux session: ${err.message}`);
+    emitEvent('agent.command.send_failed', { session_name: sessionName, command: command, error: err.message }).catch(console.error);
+  }
+}
+
+async function promptForRunMode() {
+  const readline = require('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const question = (prompt) => {
+    return new Promise((resolve) => {
+      rl.question(prompt, resolve);
+    });
+  };
+
+  try {
+    console.log('\n--- Claude Code Agent Setup ---');
+    console.log('How would you like to run the Claude Code session?');
+    console.log('\n1. Automatic Mode (Recommended)');
+    console.log('   - A new tmux session will be created in the background.');
+    console.log('   - Claude Code will be started automatically.');
+    console.log('\n2. Manual Mode');
+    console.log('   - You start/manage the tmux session and Claude Code yourself.');
+    console.log('   - The agent will connect to your existing session.');
+    console.log('---------------------------------');
+
+    const choice = await question('Enter your choice (1 or 2): ');
+    let target = null;
+
+    if (choice === '1') {
+      const defaultSessionName = `claude-agent-session-${Date.now()}`;
+      const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
+      const sessionName = sessionNameInput.trim() || defaultSessionName;
+      const claudeCommand = 'claude'; // This could be made configurable.
+      createTmuxSessionAndStartClaudeCode(sessionName, claudeCommand);
+      target = sessionName;
+    } else if (choice === '2') {
+      console.log('\nPlease start your tmux session and Claude Code now.');
+      const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
+      if (!manualTarget) {
+        console.error('Tmux target cannot be empty for Manual Mode.');
+      }
+      target = manualTarget;
+    } else {
+      console.error('Invalid choice. Please enter 1 or 2.');
+    }
+    return target;
+  } finally {
+    rl.close();
+  }
+}
+
 function formatTaskForInjection(task) {
   const title = String(task?.title || '').trim();
   const desc = String(task?.description || '').trim();
@@ -1078,8 +1247,19 @@ async function main() {
       process.exit(1);
     }
 
-    const detectedTarget = detectTmuxTarget();
-    const state = configureStateDirForHook(detectedTarget);
+    // CRITICAL: Use pane ID as primary identifier (stable across pane rearrangements)
+    const detectedPaneId = detectTmuxPaneId();
+    const detectedTarget = detectTmuxTarget(); // Deprecated: only for state dir fallback
+
+    // DEBUG: Log pane ID detection for hook
+    process.stderr.write(`[agent] ═══ Hook Pane ID Detection ═══\n`);
+    process.stderr.write(`[agent] Hook type: ${type}\n`);
+    process.stderr.write(`[agent] $TMUX_PANE env: ${process.env.TMUX_PANE || 'NOT SET'}\n`);
+    process.stderr.write(`[agent] detectTmuxPaneId(): ${detectedPaneId || 'NULL'}\n`);
+    process.stderr.write(`[agent] detectTmuxTarget(): ${detectedTarget || 'NULL'}\n`);
+    process.stderr.write(`[agent] Will use pane_id: ${detectedPaneId || 'FALLBACK TO TARGET'}\n`);
+
+    const state = configureStateDirForHook(detectedPaneId || detectedTarget);
     if (!(process.env.AGENT_NAME || '').trim() && state.label) {
       process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
     }
@@ -1089,11 +1269,15 @@ async function main() {
 
     // 2) Best-effort coordinator upload (must not affect hook outcome).
     try {
+      process.stderr.write(`[agent] ═══ Coordinator Upload Starting ═══\n`);
+      process.stderr.write(`[agent] Hook type: ${type}\n`);
+      process.stderr.write(`[agent] Pane ID: ${detectedPaneId || 'N/A'}\n`);
+      process.stderr.write(`[agent] Coordinator URL: ${coordinatorBaseUrl()}\n`);
+
       // Detect Claude Code running status
       let claudeRunning = false;
       try {
-        const paneId = detectTmuxPaneId();
-        claudeRunning = detectClaudeCodeRunning(detectedTarget, paneId);
+        claudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
       } catch {
         claudeRunning = false;
       }
@@ -1101,50 +1285,90 @@ async function main() {
       // Simple: Claude Code running = 'running', not running = 'idle'
       const status = claudeRunning ? 'running' : 'idle';
 
-      await heartbeat(status, '', { tmux_target: detectedTarget, claude_detected: claudeRunning });
+      console.log(`[agent] Sending heartbeat (status=${status})...`);
+      await heartbeat(status, '', {
+        pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
+        tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId, // UI display only
+        claude_detected: claudeRunning,
+      });
+      console.log(`[agent] Heartbeat sent successfully`);
+
+      console.log(`[agent] Emitting claude.hook event...`);
       await emitEvent('claude.hook', {
         hook: type,
         cwd: process.cwd(),
-        tmux_session: detectTmuxSession(),
-        tmux_target: detectedTarget,
+        pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
         claude_detected: claudeRunning,
         ts: new Date().toISOString(),
       });
+      console.log(`[agent] claude.hook event emitted`);
 
       if (type === 'completed') {
-        const current = readCurrentTask();
-        const tmuxSession = detectTmuxSession();
-        const tmuxTarget = detectTmuxTarget();
-        if (current && current.task_id) {
-          if (current.tmux_target && tmuxTarget && current.tmux_target !== tmuxTarget) {
-            console.error(`[agent] current task tmux mismatch: expected ${current.tmux_target}, got ${tmuxTarget} (skip auto-complete)`);
-          } else if (current.tmux_session && tmuxSession && current.tmux_session !== tmuxSession) {
-            console.error(`[agent] current task tmux mismatch: expected ${current.tmux_session}, got ${tmuxSession} (skip auto-complete)`);
-          } else {
-            await completeTask(current.task_id);
-            await emitEvent('task.completed', {
-              task_id: current.task_id,
-              tmux_session: current.tmux_session || tmuxSession,
-              tmux_target: current.tmux_target || tmuxTarget,
-              ts: new Date().toISOString(),
-            }, `task.completed:${current.task_id}`);
-            clearCurrentTask();
+        const agentId = getOrCreateAgentId();
+        console.log(`[agent] hook completed: agent_id=${agentId}, coordinator=${coordinatorBaseUrl()}`);
 
-            // Re-check Claude Code status after task completion
-            let finalClaudeRunning = false;
-            try {
-              const paneId = detectTmuxPaneId();
-              finalClaudeRunning = detectClaudeCodeRunning(detectedTarget, paneId);
-            } catch {
-              finalClaudeRunning = false;
+        console.log(`[agent] Fetching current task from coordinator...`);
+        const current = await fetchCurrentTaskFromCoordinator();
+        console.log(`[agent] current task from coordinator: ${current ? JSON.stringify({ id: current.id, title: current.title, assigned_agent_id: current.assigned_agent_id }) : 'null'}`);
+
+        if (current && current.id) {
+          try {
+            console.log(`[agent] attempting to complete task ${current.id} as agent ${agentId}...`);
+            const result = await completeTask(current.id);
+
+            if (result) {
+              console.log(`[agent] ✓ Task ${current.id} completed successfully`);
+            } else {
+              console.error(`[agent] ✗ Task completion returned null (likely 409 conflict or 404)`);
+              console.error(`[agent] This usually means agent's current_task_id doesn't match the task being completed`);
             }
 
-            await heartbeat(finalClaudeRunning ? 'running' : 'idle', '', { claude_detected: finalClaudeRunning });
+            await emitEvent('task.completed', {
+              task_id: current.id,
+              pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
+              ts: new Date().toISOString(),
+            }, `task.completed:${current.id}`);
+            // NOTE: clearCurrentTask() removed - Coordinator's CompleteTask automatically clears current_task_id
+          } catch (err) {
+            console.error(`[agent] ✗ Task completion failed with error: ${err.message}`);
+            console.error(`[agent] Stack: ${err.stack}`);
+            throw err; // Re-throw to be caught by outer try-catch
           }
+
+          // Re-check Claude Code status after task completion
+          let finalClaudeRunning = false;
+          try {
+            finalClaudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
+          } catch {
+            finalClaudeRunning = false;
+          }
+
+          await heartbeat(finalClaudeRunning ? 'running' : 'idle', '', {
+            pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
+            tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId, // UI display only
+            claude_detected: finalClaudeRunning,
+          });
+        } else {
+          console.warn(`[agent] ⚠️  No current task found in coordinator`);
+          console.warn(`[agent] Possible reasons:`);
+          console.warn(`[agent]   - Agent has no task assigned`);
+          console.warn(`[agent]   - Task already completed by another process`);
+          console.warn(`[agent]   - Agent ID mismatch between claim and completion`);
         }
       }
     } catch (err) {
-      console.error(`[agent] coordinator upload failed (ignored): ${String(err?.message || err)}`);
+      process.stderr.write(`[agent] ✗ Coordinator upload failed (ignored)\n`);
+      process.stderr.write(`[agent] Error type: ${err?.constructor?.name || 'Unknown'}\n`);
+      process.stderr.write(`[agent] Error message: ${String(err?.message || err)}\n`);
+      if (err?.errors && Array.isArray(err.errors)) {
+        process.stderr.write(`[agent] AggregateError contains ${err.errors.length} errors:\n`);
+        err.errors.forEach((e, i) => {
+          process.stderr.write(`[agent]   [${i + 1}] ${e?.message || e}\n`);
+        });
+      }
+      if (err?.stack) {
+        process.stderr.write(`[agent] Stack trace:\n${err.stack}\n`);
+      }
     }
 
     process.exit(exitCode);
@@ -1200,192 +1424,217 @@ async function main() {
     return;
   }
 
+  if (cmd === 'auto-start') {
+    const sessionName = parseFlag(args, '--session-name');
+    const command = parseFlag(args, '--command');
+    createTmuxSessionAndStartClaudeCode(sessionName, command);
+    return;
+  }
+
+  if (cmd === 'request-session') {
+    const channelName = (parseFlag(args, '--channel') || '').trim();
+    if (!channelName) {
+      console.error('Error: --channel is a required argument for the "request-session" command.');
+      usage();
+      process.exit(1);
+    }
+
+    try {
+      console.log(`[agent] looking up channel ID for name: "${channelName}"...`);
+      const { channel } = await getJson(`/v1/channels/by-name/${encodeURIComponent(channelName)}`);
+
+      if (!channel || !channel.id) {
+        console.error(`Error: Channel "${channelName}" not found on coordinator.`);
+        process.exit(1);
+      }
+
+      const channelId = channel.id;
+      console.log(`[agent] found channel ID: ${channelId}`);
+
+      console.log(`[agent] requesting new session for channel ID: ${channelId}...`);
+      const { task } = await postJson('/v1/agents/request-session', {
+        channel_id: channelId,
+      });
+
+      console.log('[agent] successfully created session request task.');
+      console.log(`[agent] Task ID: ${task.id}`);
+      process.exit(0);
+
+    } catch (err) {
+      console.error(`[agent] failed to request session: ${String(err?.message || err)}`);
+      process.exit(2);
+    }
+  }
+
   if (cmd === 'work') {
     const channelArg = (parseFlag(args, '--channel') || '').trim();
     const channels = parseCommaList(channelArg);
-    const tmuxTarget = (parseFlag(args, '--tmux-target') || parseFlag(args, '--tmux-session') || process.env.TMUX_TARGET || process.env.TMUX_SESSION || '').trim();
-    const tmuxSession = tmuxTargetSession(tmuxTarget);
+    const initialTarget = (parseFlag(args, '--tmux-target') || parseFlag(args, '--tmux-session') || process.env.TMUX_TARGET || process.env.TMUX_SESSION || '').trim();
+
+    if (!channels.length) {
+      console.error('Error: --channel is a required argument for the "work" command.');
+      usage();
+      process.exit(1);
+    }
+
+    // CRITICAL: Convert #S:#I.#P to pane ID immediately (pane ID is the stable identifier)
+    let tmuxPaneId = initialTarget ? tmuxPaneIdForTarget(initialTarget) : '';
+
+    // Deprecated: Keep tmuxTarget for backward compatibility (will be removed in future)
+    // All connection logic should use tmuxPaneId instead
+    let tmuxTarget = initialTarget;
+    let tmuxSession = tmuxTargetSession(initialTarget);
+
     const pollSec = Math.max(2, parseInt(process.env.AGENT_WORK_POLL_INTERVAL_SEC || '2', 10) || 2);
     let rrIndex = 0;
     let pendingClaim = null; // { channel: string, key: string }
     let lastPromptHash = '';
 
-    if (!channels.length || !tmuxTarget) {
-      usage();
-      process.exit(1);
-    }
-
-    const state = configureStateDirForWork(tmuxTarget);
-    if (!(process.env.AGENT_NAME || '').trim() && state.label) {
-      process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
-    }
-
-    // Get stable pane ID for the target
-    const tmuxPaneId = tmuxPaneIdForTarget(tmuxTarget);
+    console.log(`[agent] worker started: channels=${channels.join(',')} poll=${pollSec}s`);
     if (tmuxPaneId) {
-      console.log(`[agent] detected stable pane ID: ${tmuxPaneId} for target ${tmuxTarget}`);
+      const state = configureStateDirForWork(tmuxPaneId);
+      if (!(process.env.AGENT_NAME || '').trim() && state.label) {
+        process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
+      }
+      console.log(`[agent] attached to initial pane: pane_id=${tmuxPaneId} (from target: ${initialTarget})`);
+    } else if (initialTarget) {
+      console.warn(`[agent] WARNING: Could not resolve pane ID from target: ${initialTarget}`);
+      console.log('[agent] waiting for a task to configure session...');
+    } else {
+      console.log('[agent] waiting for a task to configure session...');
     }
-
-    console.log(`[agent] worker started: channels=${channels.join(',')} tmux=${tmuxTarget} pane=${tmuxPaneId || 'N/A'} poll=${pollSec}s`);
-    await heartbeat('idle', '', {
-      tmux_session: tmuxSession || tmuxTarget,
-      tmux_target: tmuxTarget,
-      tmux_pane_id: tmuxPaneId,
-      subscriptions: channels,
-      work_channels: channels,
-    });
 
     while (true) {
-      const inFlight = readCurrentTask();
-      if (inFlight && inFlight.task_id) {
-        const taskId = String(inFlight.task_id || '').trim();
-        const target = String(inFlight.tmux_target || tmuxTarget).trim();
-        const session = String(inFlight.tmux_session || tmuxSession || tmuxTarget).trim();
-        const paneId = String(inFlight.tmux_pane_id || tmuxPaneId || '').trim();
-
-        // 1) If user sent a response, claim and inject it.
+      // STATE 1: SETUP MODE (No tmux target)
+      // ===================================
+      if (!tmuxTarget) {
+        let task = null;
         try {
-          const input = await claimTaskInput(taskId);
-          if (input) {
-            const kind = String(input.kind || '').trim() || 'text';
-            const text = String(input.text || '');
-            const sendEnter = kind === 'keys' ? input.send_enter === true : input.send_enter !== false;
-
-            try {
-              if (kind === 'keys') {
-                const keys = parseTmuxKeySequence(text);
-                if (sendEnter) keys.push('Enter');
-                tmuxSendKeys(target, keys, paneId);
-              } else {
-                tmuxSend(target, text, { enter: sendEnter, clear: false, paneId });
-              }
-              await emitEvent(
-                'task.input.injected',
-                {
-                  task_id: taskId,
-                  input_id: input.id,
-                  kind,
-                  text,
-                  send_enter: sendEnter,
-                  tmux_session: session,
-                  tmux_target: target,
-                  ts: new Date().toISOString(),
-                },
-                `task.input.injected:${taskId}:${input.id}`,
-                taskId,
-              );
-            } catch (err) {
-              await emitEvent(
-                'task.input.inject_failed',
-                {
-                  task_id: taskId,
-                  input_id: input.id,
-                  error: String(err?.message || err),
-                  tmux_session: session,
-                  tmux_target: target,
-                  ts: new Date().toISOString(),
-                },
-                `task.input.inject_failed:${taskId}:${input.id}`,
-                taskId,
-              );
+          for (let i = 0; i < channels.length; i++) {
+            const ch = channels[(rrIndex + i) % channels.length];
+            const t = await claimTask(ch);
+            if (t) {
+              task = t;
+              claimedFromChannel = ch;
+              rrIndex = (rrIndex + i + 1) % channels.length;
+              break;
             }
           }
         } catch (err) {
-          console.error(`[agent] input claim failed (ignored): ${String(err?.message || err)}`);
+          console.error(`[agent] initial task claim failed: ${err.message}`);
+          await sleep(pollSec * 2000);
+          continue;
         }
 
-        // 2) Best-effort: detect Claude Code running status and interactive prompts from tmux output.
-        let prompt = null;
-        let claudeRunning = false;
-        try {
-          claudeRunning = detectClaudeCodeRunning(target, paneId);
-          const cap = tmuxCapture(target, 120, paneId);
-          prompt = detectInteractivePrompt(cap);
-        } catch {
-          prompt = null;
-          claudeRunning = false;
+        if (!task) {
+          await heartbeat('idle', '', {
+            subscriptions: channels,
+            work_channels: channels,
+            state: 'setup_polling',
+          });
+          await sleep(pollSec * 1000);
+          continue;
         }
 
-        const promptHash = prompt ? sha1hex(JSON.stringify(prompt)) : '';
+        console.log('[agent] received initial task, starting session setup...');
+        const newTarget = await promptForRunMode();
 
-        if (prompt && promptHash && promptHash !== lastPromptHash) {
-          lastPromptHash = promptHash;
-          await emitEvent(
-            'task.prompt',
-            {
-              task_id: taskId,
-              kind: prompt.kind,
-              prompt: prompt.prompt,
-              options: prompt.options,
-              snippet: prompt.snippet,
-              input_mode: prompt.input_mode,
-              hint: prompt.hint,
-              selected_key: prompt.selected_key,
-              selected_index: prompt.selected_index,
-              tmux_session: session,
-              tmux_target: target,
-              ts: new Date().toISOString(),
-            },
-            `task.prompt:${taskId}:${promptHash}`,
-            taskId,
-          );
-        }
-        if (!prompt) {
-          lastPromptHash = '';
+        if (!newTarget) {
+          console.error('[agent] setup cancelled by user.');
+          await failTask(task.id, 'Agent setup cancelled by user').catch(console.error);
+          await sleep(pollSec * 5000);
+          continue;
         }
 
-        // Simple: Claude Code running = 'running', not running = 'idle'
-        const status = claudeRunning ? 'running' : 'idle';
+        // CRITICAL: Convert target to pane ID immediately
+        tmuxPaneId = tmuxPaneIdForTarget(newTarget);
+        if (!tmuxPaneId) {
+          console.error(`[agent] Failed to resolve pane ID from target: ${newTarget}`);
+          await failTask(task.id, `Failed to resolve pane ID from target: ${newTarget}`).catch(console.error);
+          await sleep(pollSec * 5000);
+          continue;
+        }
 
-        await heartbeat(status, taskId, {
-          tmux_session: session,
-          tmux_target: target,
-          tmux_pane_id: paneId,
-          subscriptions: channels,
-          work_channels: channels,
-          interactive_prompt: waiting,
-        });
+        // Deprecated: Keep for backward compatibility
+        tmuxTarget = newTarget;
+        tmuxSession = tmuxTargetSession(newTarget);
+
+        const state = configureStateDirForWork(tmuxPaneId);
+        if (!(process.env.AGENT_NAME || '').trim() && state.label) {
+          process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
+        }
+
+        console.log(`[agent] new pane ID set: ${tmuxPaneId} (from target: ${newTarget})`);
+        await emitEvent('agent.automation.target_set', { pane_id: tmuxPaneId, initial_target: newTarget });
+        
+        const isAutomationTask = task.type === 'request_claude_session';
+        if (isAutomationTask) {
+            console.log('[agent] automation task recognized, completing it without injection.');
+            await completeTask(task.id);
+        } else {
+            try {
+                const payload = formatTaskForInjection(task);
+                tmuxInject(tmuxTarget, payload, tmuxPaneId);
+                await emitEvent('task.injected', { task_id: task.id, payload }, `task.injected:${task.id}`, task.id);
+            } catch (err) {
+                console.error(`[agent] inject failed for initial task: ${String(err?.message || err)}`);
+                await failTask(task.id, `Inject failed for initial task: ${err.message}`).catch(console.error);
+            }
+        }
+        
         await sleep(pollSec * 1000);
         continue;
       }
 
-      let task = null;
-      let claimedFromChannel = '';
+      // STATE 2: MAIN WORKER MODE (tmuxTarget is set)
+      // ============================================
+      let inFlight = await fetchCurrentTaskFromCoordinator().catch(() => null);
 
-      if (pendingClaim && pendingClaim.channel && pendingClaim.key) {
+      if (inFlight && inFlight.id) {
+        const taskId = inFlight.id;
+        let prompt = null;
+        let claudeRunning = false;
         try {
-          claimedFromChannel = pendingClaim.channel;
-          task = await claimTask(pendingClaim.channel, pendingClaim.key);
-        } catch (err) {
-          console.error(`[agent] claim error: ${String(err?.message || err)}`);
-          await sleep(pollSec * 1000);
-          continue;
-        }
-        if (!task) {
-          pendingClaim = null;
-        } else {
-          pendingClaim = null;
-        }
-      }
+          claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId);
+          if (claudeRunning) {
+            const cap = tmuxCapture(tmuxTarget, 120, tmuxPaneId);
+            prompt = detectInteractivePrompt(cap);
+          }
+        } catch {}
 
-      if (!task) {
+        const promptHash = prompt ? sha1hex(JSON.stringify(prompt)) : '';
+        if (prompt && promptHash !== lastPromptHash) {
+          lastPromptHash = promptHash;
+          await emitEvent('task.prompt', { task_id: taskId, ...prompt }, `task.prompt:${taskId}:${promptHash}`, taskId);
+        }
+        if (!prompt) lastPromptHash = '';
+
+        await heartbeat(claudeRunning ? 'running' : 'idle', taskId, {
+          pane_id: tmuxPaneId, // PRIMARY: Stable pane identifier
+          tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId, // UI display only
+          subscriptions: channels,
+          work_channels: channels,
+        });
+
+      } else { // No task in flight, try to claim one
+        let task = null;
+        let claimedFromChannel = '';
         for (let i = 0; i < channels.length; i++) {
           const ch = channels[(rrIndex + i) % channels.length];
-          const key = `claim:${ch}:${uuidv4()}`;
           try {
-            const t = await claimTask(ch, key);
-            if (!t) continue;
-            task = t;
-            claimedFromChannel = ch;
-            rrIndex = (rrIndex + i + 1) % channels.length;
-            break;
+            const t = await claimTask(ch);
+            if (t) {
+              task = t;
+              claimedFromChannel = ch;
+              rrIndex = (rrIndex + i + 1) % channels.length;
+              break;
+            }
           } catch (err) {
-            pendingClaim = { channel: ch, key };
             console.error(`[agent] claim error: ${String(err?.message || err)}`);
-            break;
+            await sleep(pollSec * 2000);
+            break; 
           }
         }
-      }
 
         if (!task) {
           let claudeRunning = false;
