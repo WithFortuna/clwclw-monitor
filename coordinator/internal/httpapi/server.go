@@ -43,6 +43,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/agents", s.handleAgentsList)
 
 	s.mux.HandleFunc("/v1/channels", s.handleChannels)
+	s.mux.HandleFunc("GET /v1/channels/by-name/{name}", s.handleGetChannelByName)
+	s.mux.HandleFunc("/v1/chains", s.handleChains)
+	s.mux.HandleFunc("/v1/chains/{id}", s.handleChain)
 	s.mux.HandleFunc("/v1/tasks", s.handleTasks)
 	s.mux.HandleFunc("/v1/tasks/claim", s.handleTasksClaim)
 	s.mux.HandleFunc("/v1/tasks/assign", s.handleTasksAssign)

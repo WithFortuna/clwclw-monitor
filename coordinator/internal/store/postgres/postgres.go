@@ -65,13 +65,14 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 		// Let DB generate UUID.
 		var out model.Agent
 		err := s.pool.QueryRow(ctx, `
-			insert into public.agents (name, status, current_task_id, last_seen, meta)
-			values ($1, $2, nullif($3, '')::uuid, $4, $5::jsonb)
-			returning id::text, name, status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-		`, a.Name, string(a.Status), a.CurrentTaskID, now, string(metaJSON)).Scan(
+			insert into public.agents (name, status, claude_status, current_task_id, last_seen, meta)
+			values ($1, $2, $3, nullif($4, '')::uuid, $5, $6::jsonb)
+			returning id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		`, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON)).Scan(
 			&out.ID,
 			&out.Name,
 			&out.Status,
+			&out.ClaudeStatus,
 			&out.CurrentTaskID,
 			&out.LastSeen,
 			&metaJSON,
@@ -87,20 +88,22 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 
 	var out model.Agent
 	err := s.pool.QueryRow(ctx, `
-		insert into public.agents (id, name, status, current_task_id, last_seen, meta)
-		values ($1::uuid, $2, $3, nullif($4, '')::uuid, $5, $6::jsonb)
+		insert into public.agents (id, name, status, claude_status, current_task_id, last_seen, meta)
+		values ($1::uuid, $2, $3, $4, nullif($5, '')::uuid, $6, $7::jsonb)
 		on conflict (id) do update
 		set name = excluded.name,
 		    status = excluded.status,
+		    claude_status = excluded.claude_status,
 		    current_task_id = excluded.current_task_id,
 		    last_seen = excluded.last_seen,
 		    meta = excluded.meta,
 		    updated_at = now()
-		returning id::text, name, status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-	`, a.ID, a.Name, string(a.Status), a.CurrentTaskID, now, string(metaJSON)).Scan(
+		returning id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+	`, a.ID, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON)).Scan(
 		&out.ID,
 		&out.Name,
 		&out.Status,
+		&out.ClaudeStatus,
 		&out.CurrentTaskID,
 		&out.LastSeen,
 		&metaJSON,
@@ -116,7 +119,7 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 
 func (s *Store) ListAgents(ctx context.Context) ([]model.Agent, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id::text, name, status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		select id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
 		from public.agents
 		order by last_seen desc
 	`)
@@ -129,7 +132,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]model.Agent, error) {
 	for rows.Next() {
 		var a model.Agent
 		var metaJSON []byte
-		if err := rows.Scan(&a.ID, &a.Name, &a.Status, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, mapPgErr(err)
 		}
 		_ = json.Unmarshal(metaJSON, &a.Meta)
@@ -177,12 +180,170 @@ func (s *Store) ListChannels(ctx context.Context) ([]model.Channel, error) {
 	return out, nil
 }
 
+func (s *Store) GetChannelByName(ctx context.Context, name string) (model.Channel, error) {
+	var ch model.Channel
+	err := s.pool.QueryRow(ctx, `
+		select id::text, name, coalesce(description, ''), created_at
+		from public.channels
+		where name = $1
+	`, name).Scan(&ch.ID, &ch.Name, &ch.Description, &ch.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Channel{}, store.ErrNotFound
+		}
+		return model.Channel{}, mapPgErr(err)
+	}
+	return ch, nil
+}
+
+func (s *Store) CreateChain(ctx context.Context, c model.Chain) (model.Chain, error) {
+	if strings.TrimSpace(c.ChannelID) == "" {
+		return model.Chain{}, errors.New("channel_id_required")
+	}
+	if strings.TrimSpace(c.Name) == "" {
+		return model.Chain{}, errors.New("name_required")
+	}
+
+	status := c.Status
+	if status == "" {
+		status = model.ChainStatusQueued
+	}
+
+	var out model.Chain
+	err := s.pool.QueryRow(ctx, `
+		insert into public.chains (channel_id, name, description, status)
+		values ($1::uuid, $2, nullif($3, ''), $4)
+		returning id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+	`, c.ChannelID, c.Name, c.Description, string(status)).Scan(
+		&out.ID,
+		&out.ChannelID,
+		&out.Name,
+		&out.Description,
+		&out.Status,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		return model.Chain{}, mapPgErr(err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetChain(ctx context.Context, id string) (model.Chain, error) {
+	var out model.Chain
+	err := s.pool.QueryRow(ctx, `
+		select id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+		from public.chains
+		where id = $1::uuid
+	`, id).Scan(
+		&out.ID,
+		&out.ChannelID,
+		&out.Name,
+		&out.Description,
+		&out.Status,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Chain{}, store.ErrNotFound
+		}
+		return model.Chain{}, mapPgErr(err)
+	}
+	return out, nil
+}
+
+func (s *Store) ListChains(ctx context.Context, channelID string) ([]model.Chain, error) {
+	query := `
+		select id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+		from public.chains
+	`
+	var args []any
+	if strings.TrimSpace(channelID) != "" {
+		query += " where channel_id = $1::uuid"
+		args = append(args, channelID)
+	}
+	query += " order by created_at asc"
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer rows.Close()
+
+	var out []model.Chain
+	for rows.Next() {
+		var c model.Chain
+		if err := rows.Scan(
+			&c.ID,
+			&c.ChannelID,
+			&c.Name,
+			&c.Description,
+			&c.Status,
+			&c.CreatedAt,
+			&c.UpdatedAt,
+		); err != nil {
+			return nil, mapPgErr(err)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (s *Store) UpdateChain(ctx context.Context, c model.Chain) (model.Chain, error) {
+	var out model.Chain
+	err := s.pool.QueryRow(ctx, `
+		update public.chains
+		set name = $2,
+		    description = nullif($3, ''),
+		    status = $4,
+		    updated_at = now()
+		where id = $1::uuid
+		returning id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+	`, c.ID, c.Name, c.Description, string(c.Status)).Scan(
+		&out.ID,
+		&out.ChannelID,
+		&out.Name,
+		&out.Description,
+		&out.Status,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Chain{}, store.ErrNotFound
+		}
+		return model.Chain{}, mapPgErr(err)
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteChain(ctx context.Context, id string) error {
+	cmdTag, err := s.pool.Exec(ctx, `
+		delete from public.chains
+		where id = $1::uuid
+	`, id)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error) {
 	if strings.TrimSpace(t.ChannelID) == "" {
 		return model.Task{}, errors.New("channel_id_required")
 	}
 	if strings.TrimSpace(t.Title) == "" {
 		return model.Task{}, errors.New("title_required")
+	}
+	if strings.TrimSpace(t.ChainID) != "" {
+		// Verify chain exists
+		if _, err := s.GetChain(ctx, t.ChainID); err != nil {
+			return model.Task{}, fmt.Errorf("chain_id not found: %w", err)
+		}
 	}
 
 	status := t.Status
@@ -192,18 +353,21 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 	var out model.Task
 	err := s.pool.QueryRow(ctx, `
-		insert into public.tasks (channel_id, title, description, status, priority)
-		values ($1::uuid, $2, nullif($3, ''), $4, $5)
-		returning id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		          coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
-	`, t.ChannelID, t.Title, t.Description, string(status), t.Priority).Scan(
+		insert into public.tasks (channel_id, chain_id, sequence, title, description, status, priority, execution_mode)
+		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), $6, $7, nullif($8, ''))
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
+	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, string(status), t.Priority, string(t.ExecutionMode)).Scan(
 		&out.ID,
 		&out.ChannelID,
+		&out.ChainID,
+		&out.Sequence,
 		&out.Title,
 		&out.Description,
 		&out.Status,
 		&out.Priority,
 		&out.AssignedAgentID,
+		&out.ExecutionMode,
 		&out.CreatedAt,
 		&out.ClaimedAt,
 		&out.DoneAt,
@@ -217,8 +381,8 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task, error) {
 	query := `
-		select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+		select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 		from public.tasks
 	`
 	var where []string
@@ -227,6 +391,10 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 	if strings.TrimSpace(f.ChannelID) != "" {
 		args = append(args, f.ChannelID)
 		where = append(where, fmt.Sprintf("channel_id = $%d::uuid", len(args)))
+	}
+	if strings.TrimSpace(f.ChainID) != "" { // New filter for ChainID
+		args = append(args, f.ChainID)
+		where = append(where, fmt.Sprintf("chain_id = $%d::uuid", len(args)))
 	}
 	if strings.TrimSpace(string(f.Status)) != "" {
 		args = append(args, string(f.Status))
@@ -253,11 +421,14 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 		if err := rows.Scan(
 			&t.ID,
 			&t.ChannelID,
+			&t.ChainID,
+			&t.Sequence,
 			&t.Title,
 			&t.Description,
 			&t.Status,
 			&t.Priority,
 			&t.AssignedAgentID,
+			&t.ExecutionMode,
 			&t.CreatedAt,
 			&t.ClaimedAt,
 			&t.DoneAt,
@@ -318,7 +489,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 			var out model.Task
 			err := tx.QueryRow(ctx, `
 				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-				       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
 			`, existingTaskID).Scan(
@@ -329,6 +500,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 				&out.Status,
 				&out.Priority,
 				&out.AssignedAgentID,
+				&out.ExecutionMode,
 				&out.CreatedAt,
 				&out.ClaimedAt,
 				&out.DoneAt,
@@ -341,12 +513,11 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 				return nil, mapPgErr(err)
 			}
 
-			// Best-effort agent status update.
+			// Update agent's current_task_id.
+			// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 			_, _ = tx.Exec(ctx, `
 				update public.agents
 				set current_task_id = $2::uuid,
-				    status = 'running',
-				    last_seen = now(),
 				    updated_at = now()
 				where id = $1::uuid
 			`, req.AgentID, out.ID)
@@ -363,7 +534,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 	var t model.Task
 	err = tx.QueryRow(ctx, `
 		select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 		from public.claim_task($1::uuid, $2::uuid)
 	`, channelID, req.AgentID).Scan(
 		&t.ID,
@@ -373,6 +544,7 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
+		&t.ExecutionMode,
 		&t.CreatedAt,
 		&t.ClaimedAt,
 		&t.DoneAt,
@@ -393,12 +565,11 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 		`, req.AgentID, idemKey, t.ID)
 	}
 
-	// Best-effort agent status update.
+	// Update agent's current_task_id.
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	_, _ = tx.Exec(ctx, `
 		update public.agents
 		set current_task_id = $2::uuid,
-		    status = 'running',
-		    last_seen = now(),
 		    updated_at = now()
 		where id = $1::uuid
 	`, req.AgentID, t.ID)
@@ -434,7 +605,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		where id = $1::uuid
 		  and status = 'queued'
 		returning id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		          coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`, req.TaskID, req.AgentID).Scan(
 		&t.ID,
 		&t.ChannelID,
@@ -443,6 +614,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
+		&t.ExecutionMode,
 		&t.CreatedAt,
 		&t.ClaimedAt,
 		&t.DoneAt,
@@ -453,7 +625,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
 				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-				       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
 			`, req.TaskID).Scan(
@@ -464,6 +636,7 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,
+				&existing.ExecutionMode,
 				&existing.CreatedAt,
 				&existing.ClaimedAt,
 				&existing.DoneAt,
@@ -486,12 +659,11 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		}
 	}
 
-	// Best-effort agent status update.
+	// Update agent's current_task_id.
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	_, _ = tx.Exec(ctx, `
 		update public.agents
 		set current_task_id = $2::uuid,
-		    status = 'running',
-		    last_seen = now(),
 		    updated_at = now()
 		where id = $1::uuid
 	`, req.AgentID, t.ID)
@@ -528,19 +700,22 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 	}
 	query += " and status = 'in_progress'"
 	query += `
-		returning id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		          coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`
 
 	var t model.Task
 	err = tx.QueryRow(ctx, query, args...).Scan(
 		&t.ID,
 		&t.ChannelID,
+		&t.ChainID,
+		&t.Sequence,
 		&t.Title,
 		&t.Description,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
+		&t.ExecutionMode,
 		&t.CreatedAt,
 		&t.ClaimedAt,
 		&t.DoneAt,
@@ -551,18 +726,21 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 			// Either task doesn't exist, agent mismatch, or already done.
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-				       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
 			`, req.TaskID).Scan(
 				&existing.ID,
 				&existing.ChannelID,
+				&existing.ChainID,
+				&existing.Sequence,
 				&existing.Title,
 				&existing.Description,
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,
+				&existing.ExecutionMode,
 				&existing.CreatedAt,
 				&existing.ClaimedAt,
 				&existing.DoneAt,
@@ -587,7 +765,33 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 		}
 	}
 
-	// Best-effort agent update (if agent id known).
+	// If the task was part of a chain, check if all tasks in that chain are done
+	if t.ChainID != "" {
+		var inProgressTasksInChain int
+		err := tx.QueryRow(ctx, `
+			select count(id) from public.tasks
+			where chain_id = $1::uuid
+			and status != 'done' and status != 'failed'
+		`, t.ChainID).Scan(&inProgressTasksInChain)
+		if err != nil {
+			return nil, mapPgErr(err)
+		}
+
+		if inProgressTasksInChain == 0 {
+			// All tasks in the chain are done, update chain status
+			_, err := tx.Exec(ctx, `
+				update public.chains
+				set status = $1, updated_at = now()
+				where id = $2::uuid
+			`, model.ChainStatusDone, t.ChainID)
+			if err != nil {
+				return nil, mapPgErr(err)
+			}
+		}
+	}
+
+	// Clear agent's current_task_id (task is complete)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
@@ -596,8 +800,6 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 		_, _ = tx.Exec(ctx, `
 			update public.agents
 			set current_task_id = null,
-			    status = 'idle',
-			    last_seen = now(),
 			    updated_at = now()
 			where id = $1::uuid
 		`, agentID)
@@ -635,19 +837,22 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 	}
 	query += " and status = 'in_progress'"
 	query += `
-		returning id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-		          coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 	`
 
 	var t model.Task
 	err = tx.QueryRow(ctx, query, args...).Scan(
 		&t.ID,
 		&t.ChannelID,
+		&t.ChainID,
+		&t.Sequence,
 		&t.Title,
 		&t.Description,
 		&t.Status,
 		&t.Priority,
 		&t.AssignedAgentID,
+		&t.ExecutionMode,
 		&t.CreatedAt,
 		&t.ClaimedAt,
 		&t.DoneAt,
@@ -658,18 +863,21 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 			// Either task doesn't exist, agent mismatch, or already failed.
 			var existing model.Task
 			errGet := tx.QueryRow(ctx, `
-				select id::text, channel_id::text, title, coalesce(description, ''), status, priority,
-				       coalesce(assigned_agent_id::text, ''), created_at, claimed_at, done_at, updated_at
+				select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), status, priority,
+				       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 				from public.tasks
 				where id = $1::uuid
 			`, req.TaskID).Scan(
 				&existing.ID,
 				&existing.ChannelID,
+				&existing.ChainID,
+				&existing.Sequence,
 				&existing.Title,
 				&existing.Description,
 				&existing.Status,
 				&existing.Priority,
 				&existing.AssignedAgentID,
+				&existing.ExecutionMode,
 				&existing.CreatedAt,
 				&existing.ClaimedAt,
 				&existing.DoneAt,
@@ -694,7 +902,20 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 		}
 	}
 
-	// Best-effort agent update (if agent id known).
+	// If the task was part of a chain, update chain status to failed
+	if t.ChainID != "" {
+		_, err := tx.Exec(ctx, `
+			update public.chains
+			set status = $1, updated_at = now()
+			where id = $2::uuid
+		`, model.ChainStatusFailed, t.ChainID)
+		if err != nil {
+			return nil, mapPgErr(err)
+		}
+	}
+
+	// Clear agent's current_task_id (task failed)
+	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
@@ -703,8 +924,6 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 		_, _ = tx.Exec(ctx, `
 			update public.agents
 			set current_task_id = null,
-			    status = 'idle',
-			    last_seen = now(),
 			    updated_at = now()
 			where id = $1::uuid
 		`, agentID)
