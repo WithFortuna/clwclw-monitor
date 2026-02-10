@@ -1,8 +1,21 @@
+// --- Auth Guard ---
+(function authGuard() {
+  const token = localStorage.getItem('clw_jwt');
+  if (!token) {
+    window.location.href = '/';
+    return;
+  }
+  // Async verify - redirect if token expired
+  fetch('/v1/auth/verify', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(r => { if (!r.ok) { localStorage.removeItem('clw_jwt'); localStorage.removeItem('clw_username'); window.location.href = '/'; } })
+    .catch(() => {});
+})();
+
 const els = {
   refreshBtn: document.getElementById('refreshBtn'),
   autoRefresh: document.getElementById('autoRefresh'),
-  apiKey: document.getElementById('apiKey'),
-  saveApiKeyBtn: document.getElementById('saveApiKeyBtn'),
+  userInfo: document.getElementById('userInfo'),
+  logoutBtn: document.getElementById('logoutBtn'),
   agentsCount: document.getElementById('agentsCount'),
   lastRefresh: document.getElementById('lastRefresh'),
   agentsTbody: document.getElementById('agentsTbody'),
@@ -21,6 +34,7 @@ const els = {
   channelDesc: document.getElementById('channelDesc'),
   createChannelBtn: document.getElementById('createChannelBtn'),
   taskChannel: document.getElementById('taskChannel'),
+  taskChain: document.getElementById('taskChain'),
   taskTitle: document.getElementById('taskTitle'),
   taskDesc: document.getElementById('taskDesc'),
   taskExecutionMode: document.getElementById('taskExecutionMode'),
@@ -33,27 +47,29 @@ const els = {
 let lastTasksById = new Map();
 let lastChainsById = new Map();
 let lastPromptByTaskId = new Map();
+let lastChannels = [];
+let lastChains = [];
 let promptModalState = { taskId: '', agentId: '', event: null };
 
-function getApiKey() {
-  return (localStorage.getItem('clw_api_key') || '').trim();
-}
-
-function setApiKey(value) {
-  const v = String(value || '').trim();
-  if (!v) localStorage.removeItem('clw_api_key');
-  else localStorage.setItem('clw_api_key', v);
+function getAuthToken() {
+  return (localStorage.getItem('clw_jwt') || '').trim();
 }
 
 async function api(path, options = {}) {
-  const apiKey = getApiKey();
+  const token = getAuthToken();
   const res = await fetch(path, {
     headers: {
       'Content-Type': 'application/json',
-      ...(apiKey ? { 'X-Api-Key': apiKey } : {}),
+      ...(token ? { 'Authorization': 'Bearer ' + token } : {}),
     },
     ...options,
   });
+  if (res.status === 401) {
+    localStorage.removeItem('clw_jwt');
+    localStorage.removeItem('clw_username');
+    window.location.href = '/';
+    return;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`${res.status} ${text}`);
@@ -73,8 +89,8 @@ function scheduleRefresh() {
 let stream = null;
 function startStream() {
   if (stream) stream.close();
-  const apiKey = getApiKey();
-  const url = apiKey ? `/v1/stream?api_key=${encodeURIComponent(apiKey)}` : '/v1/stream';
+  const token = getAuthToken();
+  const url = token ? `/v1/stream?token=${encodeURIComponent(token)}` : '/v1/stream';
   stream = new EventSource(url);
   stream.addEventListener('update', scheduleRefresh);
   stream.addEventListener('hello', () => {});
@@ -165,27 +181,38 @@ function renderAgents(agents) {
       const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || a?.meta?.tmux_session || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
       const claudeStatus = a.claude_status || a.status || 'idle';
+      const agentState = a?.meta?.state || '';
+      const isSetupWaiting = agentState === 'setup_waiting' && !tmux;
+      const hasSubs = Array.isArray(a?.meta?.subscriptions) && a.meta.subscriptions.length > 0;
+
+      // Tmux cell: show state + start session button if applicable
+      let tmuxCell;
+      if (isSetupWaiting) {
+        if (hasSubs) {
+          tmuxCell = `<span class="badge warn" style="margin-right:6px;">waiting</span>`
+            + `<button class="btn primary" style="padding:4px 8px;font-size:11px;" `
+            + `data-action="request-session" data-agent-id="${escapeHtml(a.id)}" `
+            + `data-channel="${escapeHtml(a.meta.subscriptions[0])}">Start Session</button>`;
+        } else {
+          tmuxCell = `<span class="badge warn">waiting</span> `
+            + `<span class="muted" style="font-size:11px;">assign channels first</span>`;
+        }
+      } else {
+        tmuxCell = escapeHtml(tmux) || '<span class="muted" style="opacity:0.4">-</span>';
+      }
+
       return `<tr>
         <td>${escapeHtml(name)}</td>
         <td>${workerStatusBadge(a.last_seen)}</td>
         <td>${claudeStatusBadge(claudeStatus)}</td>
-        <td class="muted">${escapeHtml(subs)}</td>
-        <td class="muted">${escapeHtml(tmux)}</td>
+        <td class="muted subs-cell" data-agent-id="${escapeHtml(a.id)}" data-subs="${escapeHtml(subs)}" title="Click to edit"
+            style="cursor:pointer;">${escapeHtml(subs) || '<span class="muted" style="opacity:0.5">click to assign</span>'}</td>
+        <td class="muted">${tmuxCell}</td>
         <td class="muted">${escapeHtml(fmtTime(a.last_seen))}</td>
         <td class="muted">${escapeHtml(a.current_task_id || '')}</td>
       </tr>`;
     })
     .join('');
-}
-
-function groupTasksByChannel(tasks) {
-  const by = new Map();
-  for (const t of tasks) {
-    const channelId = t.channel_id || 'unknown';
-    if (!by.has(channelId)) by.set(channelId, []);
-    by.get(channelId).push(t);
-  }
-  return by;
 }
 
 function renderTaskBoard(channels, chains, tasks) {
@@ -194,69 +221,100 @@ function renderTaskBoard(channels, chains, tasks) {
     return;
   }
 
+  // Index chains by channel
+  const chainsByChannel = new Map();
+  for (const ch of chains) {
+    const cid = ch.channel_id || 'unknown';
+    if (!chainsByChannel.has(cid)) chainsByChannel.set(cid, []);
+    chainsByChannel.get(cid).push(ch);
+  }
+
+  // Index tasks by chain
   const tasksByChain = new Map();
-  const nonChainTasks = [];
+  const standaloneTasks = new Map(); // channel_id -> tasks without chain
   for (const t of tasks) {
     if (t.chain_id) {
       if (!tasksByChain.has(t.chain_id)) tasksByChain.set(t.chain_id, []);
       tasksByChain.get(t.chain_id).push(t);
     } else {
-      nonChainTasks.push(t);
+      const cid = t.channel_id || 'unknown';
+      if (!standaloneTasks.has(cid)) standaloneTasks.set(cid, []);
+      standaloneTasks.get(cid).push(t);
     }
   }
 
   const output = [];
 
-  // Render chains
-  for (const ch of chains) {
-    const list = tasksByChain.get(ch.id) || [];
-    const queued = list.filter((t) => t.status === 'queued').sort((a, b) => a.sequence - b.sequence);
-    const prog = list.filter((t) => t.status === 'in_progress').sort((a, b) => a.sequence - b.sequence);
-    const done = list.filter((t) => t.status === 'done').sort((a, b) => a.sequence - b.sequence);
-    const failed = list.filter((t) => t.status === 'failed').sort((a, b) => a.sequence - b.sequence);
+  for (const channel of channels) {
+    const channelChains = chainsByChannel.get(channel.id) || [];
+    const standalone = standaloneTasks.get(channel.id) || [];
+    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0) + standalone.length;
+
+    let inner = '';
+
+    // Render each chain within this channel
+    for (const ch of channelChains) {
+      const list = tasksByChain.get(ch.id) || [];
+      if (!list.length) continue;
+      const queued = list.filter((t) => t.status === 'queued').sort((a, b) => a.sequence - b.sequence);
+      const prog = list.filter((t) => t.status === 'in_progress').sort((a, b) => a.sequence - b.sequence);
+      const done = list.filter((t) => t.status === 'done').sort((a, b) => a.sequence - b.sequence);
+      const failed = list.filter((t) => t.status === 'failed').sort((a, b) => a.sequence - b.sequence);
+
+      inner += `
+        <div class="chain-group">
+          <div class="chain-title">
+            <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)}</div>
+            <span class="pill">${list.length} tasks</span>
+          </div>
+          <div class="board">
+            ${renderTaskCol('Queued', queued, { variant: 'queued' })}
+            ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
+            ${renderTaskCol('Done', done, { variant: 'done' })}
+            ${renderTaskCol('Failed', failed, { variant: 'failed' })}
+          </div>
+        </div>
+      `;
+    }
+
+    // Render standalone tasks (no chain)
+    if (standalone.length) {
+      const queued = standalone.filter((t) => t.status === 'queued');
+      const prog = standalone.filter((t) => t.status === 'in_progress');
+      const done = standalone.filter((t) => t.status === 'done');
+      const failed = standalone.filter((t) => t.status === 'failed');
+
+      inner += `
+        <div class="chain-group">
+          <div class="chain-title">
+            <div class="chain-badge"><strong>Standalone</strong> Tasks</div>
+            <span class="pill">${standalone.length} tasks</span>
+          </div>
+          <div class="board">
+            ${renderTaskCol('Queued', queued, { variant: 'queued' })}
+            ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
+            ${renderTaskCol('Done', done, { variant: 'done' })}
+            ${renderTaskCol('Failed', failed, { variant: 'failed' })}
+          </div>
+        </div>
+      `;
+    }
+
+    if (!inner) {
+      inner = `<div class="muted" style="padding:8px;">No tasks in this channel.</div>`;
+    }
 
     output.push(`
-      <div class="col">
+      <div class="channel-group">
         <div class="col-title">
-          <div>Chain: ${escapeHtml(ch.name)} (${claudeStatusBadge(ch.status)})</div>
-          <span class="pill">${list.length} tasks</span>
+          <div>Channel: ${escapeHtml(channel.name)}</div>
+          <span class="pill">${totalTasks} tasks</span>
         </div>
-        <div class="board">
-          ${renderTaskCol('Queued', queued, { variant: 'queued' })}
-          ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
-          ${renderTaskCol('Done', done, { variant: 'done' })}
-          ${renderTaskCol('Failed', failed, { variant: 'failed' })}
-        </div>
+        ${inner}
       </div>
     `);
   }
 
-  // Render non-chain tasks, grouped by channel
-  const nonChainTasksByChannel = groupTasksByChannel(nonChainTasks);
-  for (const ch of channels) {
-    const list = nonChainTasksByChannel.get(ch.id) || [];
-
-    const queued = list.filter((t) => t.status === 'queued');
-    const prog = list.filter((t) => t.status === 'in_progress');
-    const done = list.filter((t) => t.status === 'done');
-    const failed = list.filter((t) => t.status === 'failed');
-
-    output.push(`
-      <div class="col">
-        <div class="col-title">
-          <div>Channel: ${escapeHtml(ch.name)} (No Chain)</div>
-          <span class="pill">${list.length} tasks</span>
-        </div>
-        <div class="board">
-          ${renderTaskCol('Queued', queued, { variant: 'queued' })}
-          ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
-          ${renderTaskCol('Done', done, { variant: 'done' })}
-          ${renderTaskCol('Failed', failed, { variant: 'failed' })}
-        </div>
-      </div>
-    `);
-  }
-  
   els.taskBoard.innerHTML = output.join('');
 }
 
@@ -265,7 +323,7 @@ function renderTaskCol(title, tasks, opts = {}) {
   const items = tasks
     .map(
       (t) => `
-      <div class="task">
+      <div class="task task-${variant}">
         <div class="task-title">${escapeHtml(t.title)}</div>
         <div class="task-desc">${escapeHtml(t.description || '')}</div>
         ${
@@ -299,7 +357,7 @@ function renderTaskCol(title, tasks, opts = {}) {
     .join('');
 
   return `
-    <div class="col">
+    <div class="col col-${variant}">
       <div class="col-title">
         <div>${escapeHtml(title)}</div>
         <span class="pill">${tasks.length}</span>
@@ -333,9 +391,28 @@ function renderEvents(events) {
 }
 
 function fillChannelSelect(selectEl, channels) {
-  selectEl.innerHTML = channels
-    .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
-    .join('');
+  const prev = selectEl.value;
+  selectEl.innerHTML =
+    `<option value="">Select channel</option>` +
+    channels
+      .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+      .join('');
+  if (prev && Array.from(selectEl.options).some((o) => o.value === prev)) {
+    selectEl.value = prev;
+  }
+}
+
+function fillChainSelect(selectEl, chains, channelId) {
+  const prev = selectEl.value;
+  const filtered = chains.filter((c) => c.channel_id === channelId);
+  selectEl.innerHTML =
+    `<option value="">New Chain (auto)</option>` +
+    filtered
+      .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${c.status})</option>`)
+      .join('');
+  if (prev && Array.from(selectEl.options).some((o) => o.value === prev)) {
+    selectEl.value = prev;
+  }
 }
 
 function computeLatestPrompts(events) {
@@ -491,26 +568,33 @@ async function refresh() {
   lastChainsById = new Map(chains.map((c) => [c.id, c])); // Populate lastChainsById
   lastPromptByTaskId = computeLatestPrompts(events);
 
+  lastChannels = channels;
+  lastChains = chains;
+
   els.lastRefresh.textContent = fmtTime(new Date().toISOString());
   renderAgents(agents);
   fillChannelSelect(els.taskChannel, channels);
   fillChannelSelect(els.claimChannel, channels);
-  renderTaskBoard(channels, chains, tasks); // Pass chains to renderTaskBoard
+  fillChainSelect(els.taskChain, chains, els.taskChannel.value);
+  renderTaskBoard(channels, chains, tasks);
   renderEvents(events);
 }
 
 async function main() {
   els.refreshBtn.addEventListener('click', () => refresh().catch(showError));
 
-  // Auth (optional)
-  if (els.apiKey) {
-    els.apiKey.value = getApiKey();
+  // Display username
+  const username = localStorage.getItem('clw_username') || '';
+  if (els.userInfo) {
+    els.userInfo.textContent = username ? `@${username}` : '';
   }
-  if (els.saveApiKeyBtn) {
-    els.saveApiKeyBtn.addEventListener('click', () => {
-      setApiKey(els.apiKey?.value || '');
-      startStream();
-      scheduleRefresh();
+
+  // Logout
+  if (els.logoutBtn) {
+    els.logoutBtn.addEventListener('click', () => {
+      localStorage.removeItem('clw_jwt');
+      localStorage.removeItem('clw_username');
+      window.location.href = '/';
     });
   }
 
@@ -602,6 +686,79 @@ async function main() {
     });
   }
 
+  // Start Session button for agents in setup_waiting state
+  els.agentsTbody.addEventListener('click', async (ev) => {
+    const btn = ev.target?.closest?.('button[data-action="request-session"]');
+    if (!btn) return;
+
+    const channelName = btn.getAttribute('data-channel') || '';
+    if (!channelName) {
+      showError(new Error('No channel assigned to this agent'));
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Requesting...';
+    try {
+      await api('/v1/agents/request-session', {
+        method: 'POST',
+        body: JSON.stringify({ channel_name: channelName }),
+      });
+      btn.textContent = 'Sent!';
+      await refresh();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Start Session';
+      showError(err);
+    }
+  });
+
+  // Inline editing for agent subscriptions
+  els.agentsTbody.addEventListener('click', (ev) => {
+    const cell = ev.target?.closest?.('.subs-cell');
+    if (!cell) return;
+    if (cell.querySelector('input')) return; // already editing
+
+    const agentId = cell.getAttribute('data-agent-id');
+    const currentSubs = cell.getAttribute('data-subs') || '';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentSubs;
+    input.placeholder = 'channel1, channel2';
+    input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;background:#1a1a2e;color:#e0e0e0;border:1px solid #6ee7b7;border-radius:3px;';
+
+    cell.textContent = '';
+    cell.appendChild(input);
+    input.focus();
+    input.select();
+
+    const save = async () => {
+      const val = input.value.trim();
+      const subs = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+      try {
+        await api(`/v1/agents/${encodeURIComponent(agentId)}/channels`, {
+          method: 'PATCH',
+          body: JSON.stringify({ subscriptions: subs }),
+        });
+      } catch (err) {
+        showError(err);
+      }
+      // SSE will trigger refresh; do explicit refresh as fallback
+      await refresh().catch(() => {});
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); refresh().catch(() => {}); }
+    });
+    input.addEventListener('blur', save, { once: true });
+  });
+
+  els.taskChannel.addEventListener('change', () => {
+    fillChainSelect(els.taskChain, lastChains, els.taskChannel.value);
+  });
+
   els.createChannelBtn.addEventListener('click', async () => {
     const name = els.channelName.value.trim();
     const description = els.channelDesc.value.trim();
@@ -617,11 +774,15 @@ async function main() {
 
   els.createTaskBtn.addEventListener('click', async () => {
     const channel_id = els.taskChannel.value;
+    const chain_id = els.taskChain.value;
     const title = els.taskTitle.value.trim();
     const description = els.taskDesc.value.trim();
     const execution_mode = els.taskExecutionMode.value.trim();
     if (!channel_id || !title) return;
     const body = { channel_id, title, description, status: 'queued', priority: 0 };
+    if (chain_id) {
+      body.chain_id = chain_id;
+    }
     if (execution_mode) {
       body.execution_mode = execution_mode;
     }

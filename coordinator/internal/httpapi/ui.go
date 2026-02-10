@@ -25,6 +25,14 @@ func (s *Server) registerUI() {
 	if uiFS == nil {
 		return
 	}
-	s.mux.Handle("/", http.FileServer(http.FS(uiFS)))
-}
 
+	fileServer := http.FileServer(http.FS(uiFS))
+
+	// Serve landing page at root
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			r.URL.Path = "/landing.html"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+}
