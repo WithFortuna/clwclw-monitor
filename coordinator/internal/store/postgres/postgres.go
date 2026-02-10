@@ -66,11 +66,12 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 		// Let DB generate UUID.
 		var out model.Agent
 		err := s.pool.QueryRow(ctx, `
-			insert into public.agents (name, status, claude_status, current_task_id, last_seen, meta)
-			values ($1, $2, $3, nullif($4, '')::uuid, $5, $6::jsonb)
-			returning id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-		`, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON)).Scan(
+			insert into public.agents (name, status, claude_status, current_task_id, last_seen, meta, user_id)
+			values ($1, $2, $3, nullif($4, '')::uuid, $5, $6::jsonb, nullif($7, '')::uuid)
+			returning id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		`, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON), a.UserID).Scan(
 			&out.ID,
+			&out.UserID,
 			&out.Name,
 			&out.Status,
 			&out.ClaudeStatus,
@@ -89,8 +90,8 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 
 	var out model.Agent
 	err := s.pool.QueryRow(ctx, `
-		insert into public.agents (id, name, status, claude_status, current_task_id, last_seen, meta)
-		values ($1::uuid, $2, $3, $4, nullif($5, '')::uuid, $6, $7::jsonb)
+		insert into public.agents (id, name, status, claude_status, current_task_id, last_seen, meta, user_id)
+		values ($1::uuid, $2, $3, $4, nullif($5, '')::uuid, $6, $7::jsonb, nullif($8, '')::uuid)
 		on conflict (id) do update
 		set name = excluded.name,
 		    status = excluded.status,
@@ -98,10 +99,12 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 		    current_task_id = excluded.current_task_id,
 		    last_seen = excluded.last_seen,
 		    meta = excluded.meta,
+		    user_id = coalesce(excluded.user_id, public.agents.user_id),
 		    updated_at = now()
-		returning id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-	`, a.ID, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON)).Scan(
+		returning id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+	`, a.ID, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON), a.UserID).Scan(
 		&out.ID,
+		&out.UserID,
 		&out.Name,
 		&out.Status,
 		&out.ClaudeStatus,
@@ -118,12 +121,19 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 	return out, nil
 }
 
-func (s *Store) ListAgents(ctx context.Context) ([]model.Agent, error) {
-	rows, err := s.pool.Query(ctx, `
-		select id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+func (s *Store) ListAgents(ctx context.Context, userID string) ([]model.Agent, error) {
+	query := `
+		select id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
 		from public.agents
-		order by last_seen desc
-	`)
+	`
+	var args []any
+	if strings.TrimSpace(userID) != "" {
+		query += " where user_id = $1::uuid"
+		args = append(args, userID)
+	}
+	query += " order by last_seen desc"
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -133,7 +143,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]model.Agent, error) {
 	for rows.Next() {
 		var a model.Agent
 		var metaJSON []byte
-		if err := rows.Scan(&a.ID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, mapPgErr(err)
 		}
 		_ = json.Unmarshal(metaJSON, &a.Meta)
@@ -146,10 +156,10 @@ func (s *Store) GetAgent(ctx context.Context, id string) (*model.Agent, error) {
 	var a model.Agent
 	var metaJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		select id::text, name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		select id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
 		from public.agents
 		where id = $1
-	`, id).Scan(&a.ID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt)
+	`, id).Scan(&a.ID, &a.UserID, &a.Name, &a.Status, &a.ClaudeStatus, &a.CurrentTaskID, &a.LastSeen, &metaJSON, &a.CreatedAt, &a.UpdatedAt)
 
 	if err != nil {
 		return nil, mapPgErr(err)
@@ -166,22 +176,29 @@ func (s *Store) CreateChannel(ctx context.Context, ch model.Channel) (model.Chan
 
 	var out model.Channel
 	err := s.pool.QueryRow(ctx, `
-		insert into public.channels (name, description)
-		values ($1, nullif($2, ''))
-		returning id::text, name, coalesce(description, ''), created_at
-	`, ch.Name, ch.Description).Scan(&out.ID, &out.Name, &out.Description, &out.CreatedAt)
+		insert into public.channels (name, description, user_id)
+		values ($1, nullif($2, ''), nullif($3, '')::uuid)
+		returning id::text, coalesce(user_id::text, ''), name, coalesce(description, ''), created_at
+	`, ch.Name, ch.Description, ch.UserID).Scan(&out.ID, &out.UserID, &out.Name, &out.Description, &out.CreatedAt)
 	if err != nil {
 		return model.Channel{}, mapPgErr(err)
 	}
 	return out, nil
 }
 
-func (s *Store) ListChannels(ctx context.Context) ([]model.Channel, error) {
-	rows, err := s.pool.Query(ctx, `
-		select id::text, name, coalesce(description, ''), created_at
+func (s *Store) ListChannels(ctx context.Context, userID string) ([]model.Channel, error) {
+	query := `
+		select id::text, coalesce(user_id::text, ''), name, coalesce(description, ''), created_at
 		from public.channels
-		order by created_at asc
-	`)
+	`
+	var args []any
+	if strings.TrimSpace(userID) != "" {
+		query += " where user_id = $1::uuid"
+		args = append(args, userID)
+	}
+	query += " order by created_at asc"
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapPgErr(err)
 	}
@@ -190,7 +207,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]model.Channel, error) {
 	var out []model.Channel
 	for rows.Next() {
 		var ch model.Channel
-		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Description, &ch.CreatedAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.UserID, &ch.Name, &ch.Description, &ch.CreatedAt); err != nil {
 			return nil, mapPgErr(err)
 		}
 		out = append(out, ch)
@@ -229,11 +246,12 @@ func (s *Store) CreateChain(ctx context.Context, c model.Chain) (model.Chain, er
 
 	var out model.Chain
 	err := s.pool.QueryRow(ctx, `
-		insert into public.chains (channel_id, name, description, status)
-		values ($1::uuid, $2, nullif($3, ''), $4)
-		returning id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
-	`, c.ChannelID, c.Name, c.Description, string(status)).Scan(
+		insert into public.chains (channel_id, name, description, status, user_id)
+		values ($1::uuid, $2, nullif($3, ''), $4, nullif($5, '')::uuid)
+		returning id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+	`, c.ChannelID, c.Name, c.Description, string(status), c.UserID).Scan(
 		&out.ID,
+		&out.UserID,
 		&out.ChannelID,
 		&out.Name,
 		&out.Description,
@@ -271,15 +289,23 @@ func (s *Store) GetChain(ctx context.Context, id string) (model.Chain, error) {
 	return out, nil
 }
 
-func (s *Store) ListChains(ctx context.Context, channelID string) ([]model.Chain, error) {
+func (s *Store) ListChains(ctx context.Context, userID string, channelID string) ([]model.Chain, error) {
 	query := `
-		select id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+		select id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
 		from public.chains
 	`
 	var args []any
+	var where []string
+	if strings.TrimSpace(userID) != "" {
+		args = append(args, userID)
+		where = append(where, fmt.Sprintf("user_id = $%d::uuid", len(args)))
+	}
 	if strings.TrimSpace(channelID) != "" {
-		query += " where channel_id = $1::uuid"
 		args = append(args, channelID)
+		where = append(where, fmt.Sprintf("channel_id = $%d::uuid", len(args)))
+	}
+	if len(where) > 0 {
+		query += " where " + strings.Join(where, " and ")
 	}
 	query += " order by created_at asc"
 
@@ -294,6 +320,7 @@ func (s *Store) ListChains(ctx context.Context, channelID string) ([]model.Chain
 		var c model.Chain
 		if err := rows.Scan(
 			&c.ID,
+			&c.UserID,
 			&c.ChannelID,
 			&c.Name,
 			&c.Description,
@@ -371,12 +398,13 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 	var out model.Task
 	err := s.pool.QueryRow(ctx, `
-		insert into public.tasks (channel_id, chain_id, sequence, title, description, type, status, priority, execution_mode)
-		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, nullif($9, ''))
-		returning id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
+		insert into public.tasks (channel_id, chain_id, sequence, title, description, type, status, priority, execution_mode, user_id)
+		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, nullif($9, ''), nullif($10, '')::uuid)
+		returning id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
-	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, t.Type, string(status), t.Priority, string(t.ExecutionMode)).Scan(
+	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, t.Type, string(status), t.Priority, string(t.ExecutionMode), t.UserID).Scan(
 		&out.ID,
+		&out.UserID,
 		&out.ChannelID,
 		&out.ChainID,
 		&out.Sequence,
@@ -400,13 +428,17 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task, error) {
 	query := `
-		select id::text, channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
+		select id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
 		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
 		from public.tasks
 	`
 	var where []string
 	args := []any{}
 
+	if strings.TrimSpace(f.UserID) != "" {
+		args = append(args, f.UserID)
+		where = append(where, fmt.Sprintf("user_id = $%d::uuid", len(args)))
+	}
 	if strings.TrimSpace(f.ChannelID) != "" {
 		args = append(args, f.ChannelID)
 		where = append(where, fmt.Sprintf("channel_id = $%d::uuid", len(args)))
@@ -439,6 +471,7 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 		var t model.Task
 		if err := rows.Scan(
 			&t.ID,
+			&t.UserID,
 			&t.ChannelID,
 			&t.ChainID,
 			&t.Sequence,
@@ -1029,25 +1062,35 @@ func (s *Store) CreateEvent(ctx context.Context, e model.Event) (model.Event, er
 
 func (s *Store) ListEvents(ctx context.Context, f store.EventFilter) ([]model.Event, error) {
 	query := `
-		select id::text, agent_id::text, coalesce(task_id::text, ''), type, payload,
-		       coalesce(idempotency_key, ''), created_at
-		from public.events
+		select e.id::text, e.agent_id::text, coalesce(e.task_id::text, ''), e.type, e.payload,
+		       coalesce(e.idempotency_key, ''), e.created_at
+		from public.events e
 	`
 	var where []string
 	args := []any{}
 
+	if strings.TrimSpace(f.UserID) != "" {
+		args = append(args, f.UserID)
+		query = `
+			select e.id::text, e.agent_id::text, coalesce(e.task_id::text, ''), e.type, e.payload,
+			       coalesce(e.idempotency_key, ''), e.created_at
+			from public.events e
+			join public.agents a on a.id = e.agent_id
+		`
+		where = append(where, fmt.Sprintf("a.user_id = $%d::uuid", len(args)))
+	}
 	if strings.TrimSpace(f.AgentID) != "" {
 		args = append(args, f.AgentID)
-		where = append(where, fmt.Sprintf("agent_id = $%d::uuid", len(args)))
+		where = append(where, fmt.Sprintf("e.agent_id = $%d::uuid", len(args)))
 	}
 	if strings.TrimSpace(f.TaskID) != "" {
 		args = append(args, f.TaskID)
-		where = append(where, fmt.Sprintf("task_id = $%d::uuid", len(args)))
+		where = append(where, fmt.Sprintf("e.task_id = $%d::uuid", len(args)))
 	}
 	if len(where) > 0 {
 		query += " where " + strings.Join(where, " and ")
 	}
-	query += " order by created_at desc"
+	query += " order by e.created_at desc"
 	if f.Limit > 0 {
 		args = append(args, f.Limit)
 		query += fmt.Sprintf(" limit $%d", len(args))

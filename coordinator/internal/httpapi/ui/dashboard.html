@@ -13,17 +13,19 @@
         <div class="brand-sub">Coordinator Dashboard (MVP)</div>
       </div>
       <div class="topbar-actions">
+        <span id="userInfo" class="muted" style="font-size:13px;font-weight:600;"></span>
         <button id="refreshBtn" class="btn">Refresh</button>
         <label class="toggle">
           <input id="autoRefresh" type="checkbox" checked />
           <span>Auto refresh</span>
         </label>
+        <button id="logoutBtn" class="btn" style="color:var(--danger);">Logout</button>
       </div>
     </header>
 
     <main class="container">
       <section class="grid">
-        <div class="card">
+        <div class="card card-compact">
           <div class="card-title">Agents</div>
           <div class="metrics">
             <div class="metric">
@@ -62,14 +64,6 @@
           <div class="card-title">Quick Actions</div>
 
           <div class="form">
-            <div class="form-title">Auth (Optional)</div>
-            <div class="row2">
-              <input id="apiKey" placeholder="X-Api-Key (only if auth enabled)" />
-              <button id="saveApiKeyBtn" class="btn">Save</button>
-            </div>
-          </div>
-
-          <div class="form">
             <div class="form-title">Create Channel</div>
             <div class="row">
               <input id="channelName" placeholder="name (e.g. backend-domain)" />
@@ -80,12 +74,14 @@
 
           <div class="form">
             <div class="form-title">Create Task</div>
-            <div class="row">
+            <div class="row task-row">
               <select id="taskChannel"></select>
-              <input id="taskTitle" placeholder="title" />
+              <select id="taskChain">
+                <option value="">New Chain (auto)</option>
+              </select>
             </div>
-            <div class="row">
-              <input id="taskDesc" placeholder="description (optional)" />
+            <div class="row task-row">
+              <input id="taskTitle" placeholder="title" />
               <select id="taskExecutionMode">
                 <option value="">Mode: Default (no change)</option>
                 <option value="accept-edits">Mode: Accept Edits</option>
@@ -93,7 +89,10 @@
                 <option value="bypass-permission">Mode: Bypass Permission</option>
               </select>
             </div>
-            <div class="row">
+            <div class="row task-row task-row-full">
+              <input id="taskDesc" placeholder="description (optional)" />
+            </div>
+            <div class="row task-row task-row-button">
               <button id="createTaskBtn" class="btn primary">Create Task</button>
             </div>
           </div>

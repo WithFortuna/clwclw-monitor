@@ -12,16 +12,15 @@ type Server struct {
 	store store.Store
 	mux   *http.ServeMux
 	bus   *eventBus
-	dash  dashboardCache
 }
 
 func NewServer(cfg config.Config, st store.Store) *Server {
+	initJWTKey(cfg.JWTSecret)
 	s := &Server{
 		cfg:   cfg,
 		store: st,
 		mux:   http.NewServeMux(),
 		bus:   newEventBus(),
-		dash:  newDashboardCache(),
 	}
 	s.registerRoutes()
 	return s
@@ -39,9 +38,18 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 
+	// Auth routes
+	s.mux.HandleFunc("POST /v1/auth/register", s.handleRegister)
+	s.mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
+	s.mux.HandleFunc("GET /v1/auth/verify", s.handleAuthVerify)
+	s.mux.HandleFunc("POST /v1/auth/agent-token", s.handleAgentToken)
+	s.mux.HandleFunc("POST /v1/auth/debug-token", s.handleDebugToken)
+
 	s.mux.HandleFunc("POST /v1/agents/heartbeat", s.handleAgentsHeartbeat)
 	s.mux.HandleFunc("POST /v1/agents/request-session", s.handleAgentsRequestSession)
 	s.mux.HandleFunc("GET /v1/agents/{id}/current-task", s.handleAgentCurrentTask)
+	s.mux.HandleFunc("GET /v1/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("PATCH /v1/agents/{id}/channels", s.handleAgentUpdateChannels)
 	s.mux.HandleFunc("GET /v1/agents", s.handleAgentsList)
 
 	s.mux.HandleFunc("/v1/channels", s.handleChannels)

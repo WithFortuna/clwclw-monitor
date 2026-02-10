@@ -55,6 +55,7 @@ const (
 
 type Agent struct {
 	ID            string         `json:"id"`
+	UserID        string         `json:"user_id,omitempty"`
 	Name          string         `json:"name"`
 	Status        AgentStatus    `json:"status"` // DEPRECATED: Use ClaudeStatus instead
 	ClaudeStatus  ClaudeStatus   `json:"claude_status"`
@@ -75,6 +76,7 @@ func (a Agent) DerivedWorkerStatus(threshold time.Duration) WorkerStatus {
 
 type Channel struct {
 	ID          string    `json:"id"`
+	UserID      string    `json:"user_id,omitempty"`
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -82,6 +84,7 @@ type Channel struct {
 
 type Chain struct {
 	ID          string      `json:"id"`
+	UserID      string      `json:"user_id,omitempty"`
 	ChannelID   string      `json:"channel_id"`
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
@@ -92,6 +95,7 @@ type Chain struct {
 
 type Task struct {
 	ID              string        `json:"id"`
+	UserID          string        `json:"user_id,omitempty"`
 	ChainID         string        `json:"chain_id,omitempty"` // New field to link to a chain
 	Sequence        int           `json:"sequence,omitempty"` // New field for order within a chain
 	ChannelID       string        `json:"channel_id"`

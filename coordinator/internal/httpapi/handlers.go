@@ -49,8 +49,11 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 		claudeStatus = model.ClaudeStatus(req.Status)
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	a := model.Agent{
 		ID:            strings.TrimSpace(req.AgentID),
+		UserID:        userID,
 		Name:          strings.TrimSpace(req.Name),
 		Status:        req.Status,   // Legacy field
 		ClaudeStatus:  claudeStatus, // New field
@@ -64,7 +67,7 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("agents")
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
@@ -80,7 +83,8 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents, err := s.store.ListAgents(r.Context())
+	userID := userIDFromContext(r.Context())
+	agents, err := s.store.ListAgents(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list agents")
 		return
@@ -116,6 +120,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
 	channelID := strings.TrimSpace(req.ChannelID)
 	channelName := strings.TrimSpace(req.ChannelName)
 
@@ -140,6 +145,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 
 	// This creates a special task that signals headless agents to prompt for setup.
 	task, err := s.store.CreateTask(r.Context(), model.Task{
+		UserID:      userID,
 		ChannelID:   channelID,
 		Title:       "Agent Session Request",
 		Description: "Automatic request for an agent on this channel to start a new Claude session.",
@@ -152,9 +158,95 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.bus.Publish("tasks")
+	s.bus.Publish(EventTasks, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"task": task})
+}
+
+func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	agentID := strings.TrimSpace(r.PathValue("id"))
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent ID is required")
+		return
+	}
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
+}
+
+type updateAgentChannelsRequest struct {
+	Subscriptions []string `json:"subscriptions"`
+}
+
+func (s *Server) handleAgentUpdateChannels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	agentID := strings.TrimSpace(r.PathValue("id"))
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent ID is required")
+		return
+	}
+
+	var req updateAgentChannelsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// Update meta.subscriptions
+	if agent.Meta == nil {
+		agent.Meta = map[string]any{}
+	}
+
+	// Clean and deduplicate subscriptions
+	subs := make([]string, 0, len(req.Subscriptions))
+	seen := map[string]bool{}
+	for _, s := range req.Subscriptions {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[s] {
+			subs = append(subs, s)
+			seen[s] = true
+		}
+	}
+	agent.Meta["subscriptions"] = subs
+
+	updated, err := s.store.UpsertAgent(r.Context(), *agent)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+	s.bus.Publish(EventAgents, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"agent": updated})
 }
 
 func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) {
@@ -215,9 +307,11 @@ type createChannelRequest struct {
 }
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		channels, err := s.store.ListChannels(r.Context())
+		channels, err := s.store.ListChannels(r.Context(), userID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
 			return
@@ -233,6 +327,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ch, err := s.store.CreateChannel(r.Context(), model.Channel{
+			UserID:      userID,
 			Name:        strings.TrimSpace(req.Name),
 			Description: strings.TrimSpace(req.Description),
 		})
@@ -245,7 +340,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("channels")
+		s.bus.Publish(EventChannels, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"channel": ch})
 		return
@@ -295,10 +390,12 @@ type updateChainRequest struct {
 }
 
 func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
 		channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
-		chains, err := s.store.ListChains(r.Context(), channelID)
+		chains, err := s.store.ListChains(r.Context(), userID, channelID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list chains")
 			return
@@ -314,6 +411,7 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 		}
 
 		chain, err := s.store.CreateChain(r.Context(), model.Chain{
+			UserID:      userID,
 			ChannelID:   strings.TrimSpace(req.ChannelID),
 			Name:        strings.TrimSpace(req.Name),
 			Description: strings.TrimSpace(req.Description),
@@ -330,7 +428,7 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains")
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"chain": chain})
 		return
@@ -347,6 +445,8 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "chain_id_required", "chain ID is required")
 		return
 	}
+
+	userID := userIDFromContext(r.Context())
 
 	switch r.Method {
 	case http.MethodGet:
@@ -386,7 +486,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains")
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusOK, map[string]any{"chain": chain})
 		return
@@ -402,7 +502,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains")
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -425,13 +525,15 @@ type createTaskRequest struct {
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		filter := store.TaskFilter{}
+		filter := store.TaskFilter{UserID: userID}
 		if v := strings.TrimSpace(r.URL.Query().Get("channel_id")); v != "" {
 			filter.ChannelID = v
 		}
-		if v := strings.TrimSpace(r.URL.Query().Get("chain_id")); v != "" { // New filter for chain_id
+		if v := strings.TrimSpace(r.URL.Query().Get("chain_id")); v != "" {
 			filter.ChainID = v
 		}
 		if v := strings.TrimSpace(r.URL.Query().Get("status")); v != "" {
@@ -455,6 +557,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// Check if ChainID is empty, if so, create a new chain for this task
 		if strings.TrimSpace(req.ChainID) == "" {
 			newChain, err := s.store.CreateChain(r.Context(), model.Chain{
+				UserID:      userID,
 				ChannelID:   strings.TrimSpace(req.ChannelID),
 				Name:        fmt.Sprintf("Standalone Chain for %s", strings.TrimSpace(req.Title)),
 				Description: fmt.Sprintf("Auto-created chain for single task: %s", strings.TrimSpace(req.Title)),
@@ -469,6 +572,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		t, err := s.store.CreateTask(r.Context(), model.Task{
+			UserID:        userID,
 			ChannelID:     strings.TrimSpace(req.ChannelID),
 			ChainID:       strings.TrimSpace(req.ChainID),
 			Sequence:      req.Sequence,
@@ -488,7 +592,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "invalid_request", err.Error())
 			return
 		}
-		s.bus.Publish("tasks")
+		s.bus.Publish(EventTasks, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"task": t})
 		return
@@ -518,6 +622,8 @@ func (s *Server) handleTasksClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	t, err := s.store.ClaimTask(r.Context(), store.ClaimTaskRequest{
 		AgentID:        strings.TrimSpace(req.AgentID),
 		ChannelID:      strings.TrimSpace(req.ChannelID),
@@ -536,8 +642,8 @@ func (s *Server) handleTasksClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks")
-	s.bus.Publish("agents")
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -560,6 +666,8 @@ func (s *Server) handleTasksAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	t, err := s.store.AssignTask(r.Context(), store.AssignTaskRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -577,8 +685,8 @@ func (s *Server) handleTasksAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks")
-	s.bus.Publish("agents")
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -601,6 +709,8 @@ func (s *Server) handleTasksComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	t, err := s.store.CompleteTask(r.Context(), store.CompleteTaskRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -618,8 +728,8 @@ func (s *Server) handleTasksComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks")
-	s.bus.Publish("agents")
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -643,6 +753,8 @@ func (s *Server) handleTasksFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	t, err := s.store.FailTask(r.Context(), store.FailTaskRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -661,8 +773,8 @@ func (s *Server) handleTasksFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks")
-	s.bus.Publish("agents")
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -688,6 +800,8 @@ func (s *Server) handleTaskInputs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	in, err := s.store.CreateTaskInput(r.Context(), store.CreateTaskInputRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -707,7 +821,7 @@ func (s *Server) handleTaskInputs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("inputs")
+	s.bus.Publish(EventInputs, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"input": in})
 }
@@ -729,6 +843,8 @@ func (s *Server) handleTaskInputsClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	in, err := s.store.ClaimTaskInput(r.Context(), store.ClaimTaskInputRequest{
 		TaskID:  strings.TrimSpace(req.TaskID),
 		AgentID: strings.TrimSpace(req.AgentID),
@@ -745,7 +861,7 @@ func (s *Server) handleTaskInputsClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("inputs")
+	s.bus.Publish(EventInputs, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"input": in})
 }
@@ -759,9 +875,11 @@ type createEventRequest struct {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		filter := store.EventFilter{}
+		filter := store.EventFilter{UserID: userID}
 		if v := strings.TrimSpace(r.URL.Query().Get("agent_id")); v != "" {
 			filter.AgentID = v
 		}
@@ -809,7 +927,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("events")
+		s.bus.Publish(EventEvents, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"event": e})
 		return
@@ -837,7 +955,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := s.bus.Subscribe()
+	userID := userIDFromContext(r.Context())
+	ch := s.bus.Subscribe(userID)
 	defer s.bus.Unsubscribe(ch)
 
 	// Initial event so the client knows the stream is up.

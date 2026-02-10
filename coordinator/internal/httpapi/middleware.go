@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log"
@@ -12,6 +13,16 @@ import (
 )
 
 const requestIDHeader = "X-Request-Id"
+
+type contextKey string
+
+const ctxUserID contextKey = "user_id"
+const ctxUsername contextKey = "username"
+
+func userIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxUserID).(string)
+	return v
+}
 
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,10 +56,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 }
 
 func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
-	// auth disabled
-	if strings.TrimSpace(cfg.AuthToken) == "" {
-		return next
-	}
+	apiToken := strings.TrimSpace(cfg.AuthToken)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always allow health checks.
@@ -57,41 +65,74 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 			return
 		}
 
-		// Allow UI/static assets without auth so operators can enter the API key in the dashboard.
+		// Allow auth endpoints without auth (register, login, agent-token).
+		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Allow UI/static assets without auth (landing page, CSS, JS).
 		if !strings.HasPrefix(r.URL.Path, "/v1/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		token := strings.TrimSpace(cfg.AuthToken)
-		if token == "" {
-			next.ServeHTTP(w, r)
+		// --- Check JWT token first ---
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			const prefix = "Bearer "
+			if strings.HasPrefix(auth, prefix) {
+				tokenStr := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+
+				// Try JWT parse
+				if userID, username, err := parseJWT(tokenStr); err == nil {
+					ctx := context.WithValue(r.Context(), ctxUserID, userID)
+					ctx = context.WithValue(ctx, ctxUsername, username)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				} else {
+					log.Printf("[auth] JWT parse failed: %v", err)
+				}
+
+				// Try API token match (admin mode, no user_id)
+				if apiToken != "" && tokenStr == apiToken {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+
+		// If no API token configured, auth requires JWT only (checked above).
+		if apiToken == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
 			return
 		}
 
-		// Query param token (for SSE/EventSource which can't set headers).
+		// --- Query param tokens (for SSE/EventSource which can't set headers) ---
 		if r.Method == http.MethodGet {
-			if key := strings.TrimSpace(r.URL.Query().Get("api_key")); key != "" && key == token {
-				next.ServeHTTP(w, r)
-				return
+			// Try JWT via query param
+			if qToken := strings.TrimSpace(r.URL.Query().Get("token")); qToken != "" {
+				if userID, username, err := parseJWT(qToken); err == nil {
+					ctx := context.WithValue(r.Context(), ctxUserID, userID)
+					ctx = context.WithValue(ctx, ctxUsername, username)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				} else {
+					log.Printf("[auth] JWT parse failed (query param): %v", err)
+				}
+				// Also try as API token
+				if apiToken != "" && qToken == apiToken {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
-			if key := strings.TrimSpace(r.URL.Query().Get("token")); key != "" && key == token {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-
-		// Authorization: Bearer <token>
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			const prefix = "Bearer "
-			if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == token {
+			if key := strings.TrimSpace(r.URL.Query().Get("api_key")); key != "" && apiToken != "" && key == apiToken {
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
 
 		// X-Api-Key: <token>
-		if key := strings.TrimSpace(r.Header.Get("X-Api-Key")); key != "" && key == token {
+		if key := strings.TrimSpace(r.Header.Get("X-Api-Key")); key != "" && key == apiToken {
 			next.ServeHTTP(w, r)
 			return
 		}

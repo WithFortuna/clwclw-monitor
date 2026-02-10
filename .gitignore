@@ -10,6 +10,7 @@ Claude-Code-Remote/node_modules/
 # Environment
 .env
 .env.local
+.env*
 Claude-Code-Remote/.env
 
 # Build
@@ -25,7 +26,12 @@ coordinator/coordinator
 
 # Agent state
 agent/data/agent-id.txt
+agent/data/agent-token.txt
+agent/data/coordinator-url.txt
 agent/data/instances/
+agent/local/
+agent/prod/
+agent/agent-mode.txt
 
 # OS
 .DS_Store

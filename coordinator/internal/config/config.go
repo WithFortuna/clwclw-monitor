@@ -6,19 +6,21 @@ import (
 )
 
 type Config struct {
-	Port      int
-	AuthToken string
-	DatabaseURL string
-	EventRetentionDays      int
-	RetentionIntervalHours  int
+	Port                   int
+	AuthToken              string
+	JWTSecret              string
+	DatabaseURL            string
+	EventRetentionDays     int
+	RetentionIntervalHours int
 }
 
 func Load() Config {
 	cfg := Config{
-		Port:                 8080,
-		AuthToken:            os.Getenv("COORDINATOR_AUTH_TOKEN"),
-		DatabaseURL:          os.Getenv("COORDINATOR_DATABASE_URL"),
-		EventRetentionDays:   30,
+		Port:                   8080,
+		AuthToken:              os.Getenv("COORDINATOR_AUTH_TOKEN"),
+		JWTSecret:              os.Getenv("COORDINATOR_JWT_SECRET"),
+		DatabaseURL:            os.Getenv("COORDINATOR_DATABASE_URL"),
+		EventRetentionDays:     30,
 		RetentionIntervalHours: 24,
 	}
 

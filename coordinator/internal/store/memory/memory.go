@@ -15,12 +15,14 @@ import (
 type Store struct {
 	mu sync.Mutex
 
-	agents   map[string]model.Agent
-	channels map[string]model.Channel
-	chains   map[string]model.Chain // New field for chains
-	tasks    map[string]model.Task
-	events   map[string]model.Event
-	inputs   map[string]model.TaskInput
+	agents    map[string]model.Agent
+	channels  map[string]model.Channel
+	chains    map[string]model.Chain
+	tasks     map[string]model.Task
+	events    map[string]model.Event
+	inputs    map[string]model.TaskInput
+	users     map[string]model.User
+	authCodes map[string]model.AuthCode
 
 	claimIdem map[string]string
 	inputIdem map[string]string
@@ -33,10 +35,12 @@ func NewStore() *Store {
 	return &Store{
 		agents:    make(map[string]model.Agent),
 		channels:  make(map[string]model.Channel),
-		chains:    make(map[string]model.Chain), // Initialize chains map
+		chains:    make(map[string]model.Chain),
 		tasks:     make(map[string]model.Task),
 		events:    make(map[string]model.Event),
 		inputs:    make(map[string]model.TaskInput),
+		users:     make(map[string]model.User),
+		authCodes: make(map[string]model.AuthCode),
 		claimIdem: make(map[string]string),
 		inputIdem: make(map[string]string),
 		idem:      make(map[string]struct{}),
@@ -102,12 +106,15 @@ func (s *Store) GetAgent(_ context.Context, id string) (*model.Agent, error) {
 	return &a, nil
 }
 
-func (s *Store) ListAgents(_ context.Context) ([]model.Agent, error) {
+func (s *Store) ListAgents(_ context.Context, userID string) ([]model.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	out := make([]model.Agent, 0, len(s.agents))
 	for _, a := range s.agents {
+		if userID != "" && a.UserID != userID {
+			continue
+		}
 		out = append(out, a)
 	}
 
@@ -137,12 +144,15 @@ func (s *Store) CreateChannel(_ context.Context, ch model.Channel) (model.Channe
 	return ch, nil
 }
 
-func (s *Store) ListChannels(_ context.Context) ([]model.Channel, error) {
+func (s *Store) ListChannels(_ context.Context, userID string) ([]model.Channel, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	out := make([]model.Channel, 0, len(s.channels))
 	for _, c := range s.channels {
+		if userID != "" && c.UserID != userID {
+			continue
+		}
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -201,12 +211,15 @@ func (s *Store) GetChain(_ context.Context, id string) (model.Chain, error) {
 	return c, nil
 }
 
-func (s *Store) ListChains(_ context.Context, channelID string) ([]model.Chain, error) {
+func (s *Store) ListChains(_ context.Context, userID string, channelID string) ([]model.Chain, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	out := make([]model.Chain, 0, len(s.chains))
 	for _, c := range s.chains {
+		if userID != "" && c.UserID != userID {
+			continue
+		}
 		if channelID != "" && c.ChannelID != channelID {
 			continue
 		}
@@ -292,10 +305,13 @@ func (s *Store) ListTasks(_ context.Context, f store.TaskFilter) ([]model.Task, 
 
 	out := make([]model.Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
+		if f.UserID != "" && t.UserID != f.UserID {
+			continue
+		}
 		if f.ChannelID != "" && t.ChannelID != f.ChannelID {
 			continue
 		}
-		if f.ChainID != "" && t.ChainID != f.ChainID { // New filter for ChainID
+		if f.ChainID != "" && t.ChainID != f.ChainID {
 			continue
 		}
 		if f.Status != "" && t.Status != f.Status {
@@ -652,8 +668,24 @@ func (s *Store) ListEvents(_ context.Context, f store.EventFilter) ([]model.Even
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Build set of agent IDs belonging to the user for filtering
+	var userAgentIDs map[string]struct{}
+	if f.UserID != "" {
+		userAgentIDs = make(map[string]struct{})
+		for _, a := range s.agents {
+			if a.UserID == f.UserID {
+				userAgentIDs[a.ID] = struct{}{}
+			}
+		}
+	}
+
 	out := make([]model.Event, 0, len(s.events))
 	for _, e := range s.events {
+		if f.UserID != "" {
+			if _, ok := userAgentIDs[e.AgentID]; !ok {
+				continue
+			}
+		}
 		if f.AgentID != "" && e.AgentID != f.AgentID {
 			continue
 		}

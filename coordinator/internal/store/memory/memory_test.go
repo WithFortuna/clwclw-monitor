@@ -119,12 +119,12 @@ func TestListChains(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test case 1: List all chains
-	allChains, err := s.ListChains(ctx, "")
+	allChains, err := s.ListChains(ctx, "", "")
 	assert.NoError(t, err)
 	assert.Len(t, allChains, 3)
 
 	// Test case 2: List chains for ch1
-	ch1Chains, err := s.ListChains(ctx, ch1.ID)
+	ch1Chains, err := s.ListChains(ctx, "", ch1.ID)
 	assert.NoError(t, err)
 	assert.Len(t, ch1Chains, 2)
 	for _, c := range ch1Chains {
@@ -132,7 +132,7 @@ func TestListChains(t *testing.T) {
 	}
 
 	// Test case 3: List chains for ch2
-	ch2Chains, err := s.ListChains(ctx, ch2.ID)
+	ch2Chains, err := s.ListChains(ctx, "", ch2.ID)
 	assert.NoError(t, err)
 	assert.Len(t, ch2Chains, 1)
 	for _, c := range ch2Chains {
@@ -140,7 +140,7 @@ func TestListChains(t *testing.T) {
 	}
 
 	// Test case 4: List chains for non-existent channel
-	nonExistentChains, err := s.ListChains(ctx, "non-existent-channel")
+	nonExistentChains, err := s.ListChains(ctx, "", "non-existent-channel")
 	assert.NoError(t, err) // Should return empty slice, not error
 	assert.Len(t, nonExistentChains, 0)
 }
