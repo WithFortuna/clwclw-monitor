@@ -48,23 +48,46 @@ function loadDotEnvIfPresent(filePath) {
   }
 }
 
+/** Per-process deploy mode. Set at startup by login/work command. */
+let _deployMode = null; // 'local' | 'prod' | null
+
+function getDeployMode() {
+  if (_deployMode) return _deployMode;
+  // Allow env override (e.g. AGENT_MODE=prod node agent/clw-agent.js work ...)
+  const fromEnv = (process.env.AGENT_MODE || '').trim();
+  if (fromEnv === 'local' || fromEnv === 'prod') return fromEnv;
+  return null;
+}
+
+function setDeployMode(mode) {
+  if (mode !== 'local' && mode !== 'prod') {
+    throw new Error(`Invalid deploy mode: ${mode} (must be 'local' or 'prod')`);
+  }
+  _deployMode = mode;
+}
+
 function usage() {
   console.log(`Usage:
-  node agent/clw-agent.js heartbeat
-  node agent/clw-agent.js hook <completed|waiting>
-  node agent/clw-agent.js run
-  node agent/clw-agent.js auto-start --session-name <name> --command <command>
-  node agent/clw-agent.js request-session --channel <name>
+  node agent/clw-agent.js login           # Login + optional interactive work setup
+  node agent/clw-agent.js work            # Interactive mode (prompts for channel & tmux)
   node agent/clw-agent.js work --channel <name> --tmux-target <target>
+    # Flag mode (backward compatible)
     # multiple channels: --channel "backend-domain,notify"
     # target examples: "claude-code", "claude-code:1", "claude-code:1.0"
     # (deprecated) --tmux-session <session>
+  node agent/clw-agent.js heartbeat
+  node agent/clw-agent.js hook <completed|waiting>
+  node agent/clw-agent.js run
+  node agent/clw-agent.js agentd          # Start IPC daemon (auto-started by work)
+  node agent/clw-agent.js auto-start --session-name <name> --command <command>
+  node agent/clw-agent.js request-session --channel <name>
 
 Env:
-  COORDINATOR_URL          default: http://localhost:8080
+  COORDINATOR_URL          default: http://localhost:8080 (also persisted per mode)
   COORDINATOR_AUTH_TOKEN   optional
-  AGENT_ID                 optional (persisted to agent/data/agent-id.txt)
+  AGENT_ID                 optional (persisted to agent/{mode}/data/agent-id.txt)
   AGENT_NAME               optional (default: hostname)
+  AGENT_MODE               optional: "local" or "prod" (set during login, persisted)
   AGENT_CHANNELS           optional (comma-separated subscriptions; e.g. "backend-domain,notify")
   AGENT_STATE_DIR          optional (state dir override; for multi-agent/multi-session)
   AGENT_HEARTBEAT_INTERVAL_SEC  default: 15
@@ -72,8 +95,44 @@ Env:
 `);
 }
 
+/**
+ * Mode-based root data directory. Unlike agentDataDir(), this is NOT affected
+ * by AGENT_STATE_DIR (which points to a per-pane instance directory).
+ * Use this for global per-mode files: coordinator-url.txt, agent-token.txt.
+ */
+function modeDataDir() {
+  const mode = getDeployMode();
+  if (!mode) return path.join(__dirname, 'data');
+  return path.join(__dirname, mode, 'data');
+}
+
 function coordinatorBaseUrl() {
-  return (process.env.COORDINATOR_URL || 'http://localhost:8080').replace(/\/+$/, '');
+  const fromEnv = (process.env.COORDINATOR_URL || '').trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+
+  // Fall back to persisted URL (saved by login/worker)
+  // Always read from mode root, NOT instance dir (hooks set AGENT_STATE_DIR)
+  const file = path.join(modeDataDir(), 'coordinator-url.txt');
+  try {
+    const url = fs.readFileSync(file, 'utf8').trim();
+    if (url) return url.replace(/\/+$/, '');
+  } catch {}
+
+  return 'http://localhost:8080';
+}
+
+function getAgentToken() {
+  // Agent token is per-mode — read from mode root (not instance dir).
+  const file = path.join(modeDataDir(), 'agent-token.txt');
+  try {
+    if (fs.existsSync(file)) {
+      const t = fs.readFileSync(file, 'utf8').trim();
+      if (t) return t;
+    }
+  } catch {
+    // ignore
+  }
+  return '';
 }
 
 function coordinatorHeaders() {
@@ -96,7 +155,13 @@ function agentDataDir() {
     const repoRoot = path.resolve(__dirname, '..');
     return path.resolve(repoRoot, override);
   }
-  return path.join(__dirname, 'data');
+
+  const mode = getDeployMode();
+  if (!mode) {
+    // Fallback for backward compat (mode not yet configured)
+    return path.join(__dirname, 'data');
+  }
+  return path.join(__dirname, mode, 'data');
 }
 
 function getOrCreateAgentId() {
