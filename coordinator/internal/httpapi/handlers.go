@@ -49,8 +49,11 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 		claudeStatus = model.ClaudeStatus(req.Status)
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	a := model.Agent{
 		ID:            strings.TrimSpace(req.AgentID),
+		UserID:        userID,
 		Name:          strings.TrimSpace(req.Name),
 		Status:        req.Status,   // Legacy field
 		ClaudeStatus:  claudeStatus, // New field
@@ -64,7 +67,7 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("agents")
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
@@ -80,7 +83,8 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agents, err := s.store.ListAgents(r.Context())
+	userID := userIDFromContext(r.Context())
+	agents, err := s.store.ListAgents(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list agents")
 		return
@@ -116,6 +120,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
 	channelID := strings.TrimSpace(req.ChannelID)
 	channelName := strings.TrimSpace(req.ChannelName)
 
@@ -140,6 +145,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 
 	// This creates a special task that signals headless agents to prompt for setup.
 	task, err := s.store.CreateTask(r.Context(), model.Task{
+		UserID:      userID,
 		ChannelID:   channelID,
 		Title:       "Agent Session Request",
 		Description: "Automatic request for an agent on this channel to start a new Claude session.",
@@ -152,7 +158,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.bus.Publish("tasks", userID)
+	s.bus.Publish(EventTasks, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"task": task})
 }
@@ -238,7 +244,7 @@ func (s *Server) handleAgentUpdateChannels(w http.ResponseWriter, r *http.Reques
 	}
 
 	userID := userIDFromContext(r.Context())
-	s.bus.Publish("agents", userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"agent": updated})
 }
@@ -334,7 +340,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("channels", userID)
+		s.bus.Publish(EventChannels, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"channel": ch})
 		return
@@ -422,7 +428,7 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains", userID)
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"chain": chain})
 		return
@@ -480,7 +486,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains", userID)
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusOK, map[string]any{"chain": chain})
 		return
@@ -496,7 +502,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("chains", userID)
+		s.bus.Publish(EventChains, userID)
 		s.invalidateDashboardCache()
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -551,6 +557,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// Check if ChainID is empty, if so, create a new chain for this task
 		if strings.TrimSpace(req.ChainID) == "" {
 			newChain, err := s.store.CreateChain(r.Context(), model.Chain{
+				UserID:      userID,
 				ChannelID:   strings.TrimSpace(req.ChannelID),
 				Name:        fmt.Sprintf("Standalone Chain for %s", strings.TrimSpace(req.Title)),
 				Description: fmt.Sprintf("Auto-created chain for single task: %s", strings.TrimSpace(req.Title)),
@@ -565,6 +572,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		t, err := s.store.CreateTask(r.Context(), model.Task{
+			UserID:        userID,
 			ChannelID:     strings.TrimSpace(req.ChannelID),
 			ChainID:       strings.TrimSpace(req.ChainID),
 			Sequence:      req.Sequence,
@@ -584,7 +592,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "invalid_request", err.Error())
 			return
 		}
-		s.bus.Publish("tasks")
+		s.bus.Publish(EventTasks, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"task": t})
 		return
@@ -634,8 +642,8 @@ func (s *Server) handleTasksClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks", userID)
-	s.bus.Publish("agents", userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -658,6 +666,8 @@ func (s *Server) handleTasksAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	t, err := s.store.AssignTask(r.Context(), store.AssignTaskRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -675,8 +685,8 @@ func (s *Server) handleTasksAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks", userID)
-	s.bus.Publish("agents", userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -718,8 +728,8 @@ func (s *Server) handleTasksComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks", userID)
-	s.bus.Publish("agents", userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -763,8 +773,8 @@ func (s *Server) handleTasksFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("tasks", userID)
-	s.bus.Publish("agents", userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"task": t})
 }
@@ -790,6 +800,8 @@ func (s *Server) handleTaskInputs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	in, err := s.store.CreateTaskInput(r.Context(), store.CreateTaskInputRequest{
 		TaskID:         strings.TrimSpace(req.TaskID),
 		AgentID:        strings.TrimSpace(req.AgentID),
@@ -809,7 +821,7 @@ func (s *Server) handleTaskInputs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("inputs")
+	s.bus.Publish(EventInputs, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusCreated, map[string]any{"input": in})
 }
@@ -831,6 +843,8 @@ func (s *Server) handleTaskInputsClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	in, err := s.store.ClaimTaskInput(r.Context(), store.ClaimTaskInputRequest{
 		TaskID:  strings.TrimSpace(req.TaskID),
 		AgentID: strings.TrimSpace(req.AgentID),
@@ -847,7 +861,7 @@ func (s *Server) handleTaskInputsClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.bus.Publish("inputs")
+	s.bus.Publish(EventInputs, userID)
 	s.invalidateDashboardCache()
 	writeJSON(w, http.StatusOK, map[string]any{"input": in})
 }
@@ -861,9 +875,11 @@ type createEventRequest struct {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+
 	switch r.Method {
 	case http.MethodGet:
-		filter := store.EventFilter{}
+		filter := store.EventFilter{UserID: userID}
 		if v := strings.TrimSpace(r.URL.Query().Get("agent_id")); v != "" {
 			filter.AgentID = v
 		}
@@ -911,7 +927,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.bus.Publish("events")
+		s.bus.Publish(EventEvents, userID)
 		s.invalidateDashboardCache()
 		writeJSON(w, http.StatusCreated, map[string]any{"event": e})
 		return
@@ -939,7 +955,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := s.bus.Subscribe()
+	userID := userIDFromContext(r.Context())
+	ch := s.bus.Subscribe(userID)
 	defer s.bus.Unsubscribe(ch)
 
 	// Initial event so the client knows the stream is up.

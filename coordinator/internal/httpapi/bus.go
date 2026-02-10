@@ -5,24 +5,39 @@ import (
 	"time"
 )
 
+const (
+	EventAgents   = "agents"
+	EventTasks    = "tasks"
+	EventChannels = "channels"
+	EventChains   = "chains"
+	EventInputs   = "inputs"
+	EventEvents   = "events"
+	EventUpdate   = "update"
+)
+
 type busEvent struct {
 	Type string    `json:"type"`
 	Time time.Time `json:"time"`
 }
 
+type subscriber struct {
+	ch     chan busEvent
+	userID string
+}
+
 type eventBus struct {
 	mu   sync.Mutex
-	subs map[chan busEvent]struct{}
+	subs map[chan busEvent]subscriber
 }
 
 func newEventBus() *eventBus {
-	return &eventBus{subs: make(map[chan busEvent]struct{})}
+	return &eventBus{subs: make(map[chan busEvent]subscriber)}
 }
 
-func (b *eventBus) Subscribe() chan busEvent {
+func (b *eventBus) Subscribe(userID string) chan busEvent {
 	ch := make(chan busEvent, 32)
 	b.mu.Lock()
-	b.subs[ch] = struct{}{}
+	b.subs[ch] = subscriber{ch: ch, userID: userID}
 	b.mu.Unlock()
 	return ch
 }
@@ -37,20 +52,22 @@ func (b *eventBus) Unsubscribe(ch chan busEvent) {
 	close(ch)
 }
 
-func (b *eventBus) Publish(typ string) {
+func (b *eventBus) Publish(typ string, userID string) {
 	if typ == "" {
-		typ = "update"
+		typ = EventUpdate
 	}
 	ev := busEvent{Type: typ, Time: time.Now().UTC()}
 
 	b.mu.Lock()
-	for ch := range b.subs {
-		select {
-		case ch <- ev:
-		default:
-			// drop if subscriber is slow
+	for _, sub := range b.subs {
+		// Send to subscriber if: no userID filter on event, or subscriber has no userID, or they match
+		if userID == "" || sub.userID == "" || sub.userID == userID {
+			select {
+			case sub.ch <- ev:
+			default:
+				// drop if subscriber is slow
+			}
 		}
 	}
 	b.mu.Unlock()
 }
-
