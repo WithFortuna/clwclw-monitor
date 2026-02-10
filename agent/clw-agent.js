@@ -13,9 +13,10 @@
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 
 function loadDotEnvIfPresent(filePath) {
   if (!filePath) return;
@@ -139,6 +140,13 @@ function coordinatorHeaders() {
   const headers = {
     'Content-Type': 'application/json',
   };
+
+  // Priority: agent token > shared API token
+  const agentToken = getAgentToken();
+  if (agentToken) {
+    headers['Authorization'] = `Bearer ${agentToken}`;
+    return headers;
+  }
 
   const token = (process.env.COORDINATOR_AUTH_TOKEN || '').trim();
   if (token) {
@@ -349,7 +357,9 @@ function tmuxTargetWithoutPane(target) {
 }
 
 function stateInstancesRoot() {
-  return path.join(__dirname, 'data', 'instances');
+  const mode = getDeployMode();
+  if (!mode) return path.join(__dirname, 'data', 'instances');
+  return path.join(__dirname, mode, 'data', 'instances');
 }
 
 function safeLabel(label) {
@@ -590,6 +600,550 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// UDS IPC Utilities
+// ═══════════════════════════════════════════════════════════════════════════
+
+function resolveSocketDir() {
+  const xdg = (process.env.XDG_RUNTIME_DIR || '').trim();
+  if (xdg) return path.join(xdg, 'clwclw');
+  return path.join(os.homedir(), '.clwclw', 'run');
+}
+
+function resolveSocketPath() {
+  return path.join(resolveSocketDir(), 'agentd.sock');
+}
+
+function resolveLockPath() {
+  return path.join(resolveSocketDir(), 'agentd.pid');
+}
+
+function sendMsg(socket, obj) {
+  const line = JSON.stringify({ id: uuidv4(), ...obj }) + '\n';
+  try {
+    socket.write(line);
+  } catch {
+    // socket may have closed
+  }
+}
+
+function createNdjsonParser(onMessage) {
+  let buffer = '';
+  return (chunk) => {
+    buffer += chunk;
+    let idx;
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+      try {
+        onMessage(JSON.parse(line));
+      } catch {
+        // ignore malformed JSON
+      }
+    }
+  };
+}
+
+function isAgentdRunning() {
+  const lockPath = resolveLockPath();
+  try {
+    const pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10);
+    if (!pid || isNaN(pid)) return false;
+    process.kill(pid, 0); // signal 0 = check alive
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanStaleSocket() {
+  const sockPath = resolveSocketPath();
+  const lockPath = resolveLockPath();
+  try { fs.unlinkSync(sockPath); } catch {}
+  try { fs.unlinkSync(lockPath); } catch {}
+}
+
+function writeLockFile() {
+  const lockPath = resolveLockPath();
+  fs.writeFileSync(lockPath, String(process.pid) + '\n', 'utf8');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// agentd Server
+// ═══════════════════════════════════════════════════════════════════════════
+
+function startAgentd() {
+  return new Promise((resolve, reject) => {
+    if (isAgentdRunning()) {
+      console.error('[agentd] another instance is already running');
+      process.exit(1);
+    }
+
+    cleanStaleSocket();
+
+    const dir = resolveSocketDir();
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+
+    const workers = new Map();        // paneId → {socket, agentId, mode, coordinatorUrl, channels, pid}
+    const pendingHooks = new Map();   // requestId → {hookSocket, timer, attempts, paneId, hookType, cwd}
+    const socketToPaneId = new Map(); // socket → paneId (for disconnect cleanup)
+
+    const HOOK_ACK_TIMEOUT = 15000;
+    const HOOK_MAX_RETRIES = 5;
+
+    function handleRegister(msg, socket) {
+      const { paneId, agentId, mode, coordinatorUrl, channels, pid } = msg;
+      if (!paneId) return;
+
+      // Replace existing worker for same paneId
+      const existing = workers.get(paneId);
+      if (existing && existing.socket !== socket) {
+        socketToPaneId.delete(existing.socket);
+      }
+
+      workers.set(paneId, { socket, agentId, mode, coordinatorUrl, channels, pid });
+      socketToPaneId.set(socket, paneId);
+      console.log(`[agentd] registered worker: pane=${paneId} agent=${agentId} mode=${mode}`);
+      sendMsg(socket, { type: 'register_ack', requestId: msg.id, success: true });
+    }
+
+    function handleUnregister(msg, socket) {
+      const paneId = msg.paneId || socketToPaneId.get(socket);
+      if (paneId) {
+        workers.delete(paneId);
+        console.log(`[agentd] unregistered worker: pane=${paneId}`);
+      }
+      socketToPaneId.delete(socket);
+    }
+
+    function handleHookRequest(msg, hookSocket) {
+      const { paneId, hookType, cwd } = msg;
+      const requestId = msg.id;
+
+      const worker = workers.get(paneId);
+      if (!worker) {
+        console.log(`[agentd] no worker for pane=${paneId}, sending hook_no_match`);
+        sendMsg(hookSocket, { type: 'hook_no_match', requestId, reason: `no worker registered for pane ${paneId}` });
+        return;
+      }
+
+      pendingHooks.set(requestId, {
+        hookSocket,
+        paneId,
+        hookType,
+        cwd,
+        attempts: 0,
+      });
+
+      forwardHookToWorker(requestId);
+    }
+
+    function forwardHookToWorker(requestId) {
+      const pending = pendingHooks.get(requestId);
+      if (!pending) return;
+
+      pending.attempts++;
+      const worker = workers.get(pending.paneId);
+
+      if (!worker || worker.socket.destroyed) {
+        console.log(`[agentd] worker disconnected during hook forward, pane=${pending.paneId}`);
+        sendMsg(pending.hookSocket, { type: 'hook_no_match', requestId, reason: 'worker disconnected' });
+        pendingHooks.delete(requestId);
+        return;
+      }
+
+      sendMsg(worker.socket, {
+        type: 'hook_forward',
+        requestId,
+        hookType: pending.hookType,
+        paneId: pending.paneId,
+        cwd: pending.cwd,
+      });
+
+      // Set ack timeout
+      pending.timer = setTimeout(() => {
+        const p = pendingHooks.get(requestId);
+        if (!p) return;
+
+        if (p.attempts < HOOK_MAX_RETRIES) {
+          console.log(`[agentd] hook_ack timeout, retrying (attempt ${p.attempts + 1}/${HOOK_MAX_RETRIES})`);
+          forwardHookToWorker(requestId);
+        } else {
+          console.log(`[agentd] hook_ack timeout after ${HOOK_MAX_RETRIES} retries`);
+          sendMsg(p.hookSocket, { type: 'hook_result', requestId, success: false, error: 'ack timeout' });
+          pendingHooks.delete(requestId);
+        }
+      }, HOOK_ACK_TIMEOUT);
+    }
+
+    function handleHookAck(msg) {
+      const { requestId, success, taskId, error } = msg;
+      const pending = pendingHooks.get(requestId);
+      if (!pending) return;
+
+      clearTimeout(pending.timer);
+      sendMsg(pending.hookSocket, { type: 'hook_result', requestId, success, taskId, error });
+      pendingHooks.delete(requestId);
+      console.log(`[agentd] hook_ack: request=${requestId} success=${success}`);
+    }
+
+    function handleSocketClose(socket) {
+      const paneId = socketToPaneId.get(socket);
+      if (paneId) {
+        const worker = workers.get(paneId);
+        if (worker && worker.socket === socket) {
+          workers.delete(paneId);
+          console.log(`[agentd] worker disconnected: pane=${paneId}`);
+        }
+      }
+      socketToPaneId.delete(socket);
+    }
+
+    const sockPath = resolveSocketPath();
+    const server = net.createServer((socket) => {
+      const parser = createNdjsonParser((msg) => {
+        if (!msg || !msg.type) return;
+        switch (msg.type) {
+          case 'register':    handleRegister(msg, socket); break;
+          case 'unregister':  handleUnregister(msg, socket); break;
+          case 'hook_request': handleHookRequest(msg, socket); break;
+          case 'hook_ack':    handleHookAck(msg); break;
+        }
+      });
+
+      socket.setEncoding('utf8');
+      socket.on('data', parser);
+      socket.on('close', () => handleSocketClose(socket));
+      socket.on('error', () => handleSocketClose(socket));
+    });
+
+    server.on('error', (err) => {
+      console.error(`[agentd] server error: ${err.message}`);
+      process.exit(1);
+    });
+
+    server.listen(sockPath, () => {
+      // Set socket permissions
+      try { fs.chmodSync(sockPath, 0o600); } catch {}
+      writeLockFile();
+      console.log(`[agentd] listening on ${sockPath} (pid=${process.pid})`);
+      console.log(`[agentd] workers: ${workers.size}`);
+    });
+
+    const shutdown = (signal) => {
+      console.log(`[agentd] shutting down (${signal})...`);
+      server.close();
+      try { fs.unlinkSync(sockPath); } catch {}
+      try { fs.unlinkSync(resolveLockPath()); } catch {}
+      process.exit(0);
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hook via agentd (IPC client)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function tryHookViaAgentd(paneId, hookType) {
+  const sockPath = resolveSocketPath();
+  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    const TOTAL_TIMEOUT = 90000;
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.end(); } catch {}
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish(false), TOTAL_TIMEOUT);
+
+    const socket = net.createConnection(sockPath);
+
+    socket.setEncoding('utf8');
+    socket.on('error', () => finish(false));
+    socket.on('close', () => finish(false));
+
+    const parser = createNdjsonParser((msg) => {
+      if (msg.type === 'hook_result') {
+        finish(msg.success === true);
+      } else if (msg.type === 'hook_no_match') {
+        finish(false);
+      }
+    });
+
+    socket.on('data', parser);
+
+    socket.on('connect', () => {
+      sendMsg(socket, {
+        type: 'hook_request',
+        paneId,
+        hookType,
+        cwd: process.cwd(),
+      });
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// hookDirectCoordinator — extracted from existing hook logic
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function hookDirectCoordinator(type, detectedPaneId, detectedTarget) {
+  process.stderr.write(`[agent] ═══ Coordinator Upload Starting ═══\n`);
+  process.stderr.write(`[agent] Hook type: ${type}\n`);
+  process.stderr.write(`[agent] Pane ID: ${detectedPaneId || 'N/A'}\n`);
+  process.stderr.write(`[agent] Coordinator URL: ${coordinatorBaseUrl()}\n`);
+
+  // Detect Claude Code running status
+  let claudeRunning = false;
+  try {
+    claudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
+  } catch {
+    claudeRunning = false;
+  }
+
+  const status = claudeRunning ? 'running' : 'idle';
+
+  console.log(`[agent] Sending heartbeat (status=${status})...`);
+  await heartbeat(status, '', {
+    pane_id: detectedPaneId,
+    tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId,
+    claude_detected: claudeRunning,
+  });
+  console.log(`[agent] Heartbeat sent successfully`);
+
+  console.log(`[agent] Emitting claude.hook event...`);
+  await emitEvent('claude.hook', {
+    hook: type,
+    cwd: process.cwd(),
+    pane_id: detectedPaneId,
+    claude_detected: claudeRunning,
+    ts: new Date().toISOString(),
+  });
+  console.log(`[agent] claude.hook event emitted`);
+
+  if (type === 'completed') {
+    const agentId = getOrCreateAgentId();
+    console.log(`[agent] hook completed: agent_id=${agentId}, coordinator=${coordinatorBaseUrl()}`);
+
+    console.log(`[agent] Fetching current task from coordinator...`);
+    const current = await fetchCurrentTaskFromCoordinator();
+    console.log(`[agent] current task from coordinator: ${current ? JSON.stringify({ id: current.id, title: current.title, assigned_agent_id: current.assigned_agent_id }) : 'null'}`);
+
+    if (current && current.id) {
+      console.log(`[agent] attempting to complete task ${current.id} as agent ${agentId}...`);
+      const result = await completeTask(current.id);
+
+      if (result) {
+        console.log(`[agent] Task ${current.id} completed successfully`);
+      } else {
+        console.error(`[agent] Task completion returned null (likely 409 conflict or 404)`);
+        console.error(`[agent] This usually means agent's current_task_id doesn't match the task being completed`);
+      }
+
+      await emitEvent('task.completed', {
+        task_id: current.id,
+        pane_id: detectedPaneId,
+        ts: new Date().toISOString(),
+      }, `task.completed:${current.id}`);
+
+      // Re-check Claude Code status after task completion
+      let finalClaudeRunning = false;
+      try {
+        finalClaudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
+      } catch {
+        finalClaudeRunning = false;
+      }
+
+      await heartbeat(finalClaudeRunning ? 'running' : 'idle', '', {
+        pane_id: detectedPaneId,
+        tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId,
+        claude_detected: finalClaudeRunning,
+      });
+    } else {
+      console.warn(`[agent] No current task found in coordinator`);
+      console.warn(`[agent] Possible reasons:`);
+      console.warn(`[agent]   - Agent has no task assigned`);
+      console.warn(`[agent]   - Task already completed by another process`);
+      console.warn(`[agent]   - Agent ID mismatch between claim and completion`);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Work client: agentd integration
+// ═══════════════════════════════════════════════════════════════════════════
+
+function ensureAgentdRunning() {
+  if (isAgentdRunning()) return;
+
+  console.log('[agent] starting agentd in background...');
+  const agentScript = path.resolve(__filename);
+  const child = spawn(process.execPath, [agentScript, 'agentd'], {
+    detached: true,
+    stdio: 'ignore',
+    env: process.env,
+  });
+  child.unref();
+
+  // Wait briefly for socket to appear
+  const sockPath = resolveSocketPath();
+  for (let i = 0; i < 20; i++) {
+    spawnSync('sleep', ['0.1'], { stdio: 'ignore' });
+    if (fs.existsSync(sockPath)) {
+      console.log('[agent] agentd started successfully');
+      return;
+    }
+  }
+  console.warn('[agent] agentd may not have started (socket not found after 2s)');
+}
+
+function connectToAgentd(paneId, agentId, mode, coordinatorUrl, channels) {
+  const sockPath = resolveSocketPath();
+  if (!fs.existsSync(sockPath)) return null;
+
+  return new Promise((resolve) => {
+    const socket = net.createConnection(sockPath);
+    let resolved = false;
+
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        try { socket.end(); } catch {}
+        resolve(null);
+      }
+    }, 5000);
+
+    socket.setEncoding('utf8');
+    socket.on('error', () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(null);
+      }
+    });
+
+    socket.on('connect', () => {
+      sendMsg(socket, {
+        type: 'register',
+        paneId,
+        agentId,
+        mode: mode || getDeployMode() || 'local',
+        coordinatorUrl: coordinatorUrl || coordinatorBaseUrl(),
+        channels: channels || [],
+        pid: process.pid,
+      });
+    });
+
+    const parser = createNdjsonParser((msg) => {
+      if (msg.type === 'register_ack') {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          console.log(`[agent] registered with agentd: pane=${paneId}`);
+          resolve(socket);
+        }
+      }
+    });
+
+    socket.on('data', parser);
+  });
+}
+
+function setupAgentdListener(agentdSocket, tmuxTarget, tmuxPaneId, channels) {
+  const parser = createNdjsonParser(async (msg) => {
+    if (msg.type === 'hook_forward') {
+      await handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId);
+    }
+  });
+
+  agentdSocket.on('data', parser);
+}
+
+async function handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId) {
+  const { requestId, hookType, paneId, cwd } = msg;
+  try {
+    // Detect Claude Code running status
+    let claudeRunning = false;
+    try {
+      claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId);
+    } catch {
+      claudeRunning = false;
+    }
+
+    const status = claudeRunning ? 'running' : 'idle';
+
+    await heartbeat(status, '', {
+      pane_id: tmuxPaneId,
+      tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId,
+      claude_detected: claudeRunning,
+    });
+
+    await emitEvent('claude.hook', {
+      hook: hookType,
+      cwd,
+      pane_id: tmuxPaneId,
+      claude_detected: claudeRunning,
+      ts: new Date().toISOString(),
+    });
+
+    let taskId = '';
+    if (hookType === 'completed') {
+      const current = await fetchCurrentTaskFromCoordinator();
+      if (current && current.id) {
+        const result = await completeTask(current.id);
+        taskId = current.id;
+
+        await emitEvent('task.completed', {
+          task_id: current.id,
+          pane_id: tmuxPaneId,
+          ts: new Date().toISOString(),
+        }, `task.completed:${current.id}`);
+
+        // Post-completion heartbeat
+        let finalClaudeRunning = false;
+        try {
+          finalClaudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId);
+        } catch {
+          finalClaudeRunning = false;
+        }
+
+        await heartbeat(finalClaudeRunning ? 'running' : 'idle', '', {
+          pane_id: tmuxPaneId,
+          tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId,
+          claude_detected: finalClaudeRunning,
+        });
+      }
+    }
+
+    sendMsg(agentdSocket, { type: 'hook_ack', requestId, success: true, taskId });
+  } catch (err) {
+    console.error(`[agent] hook_forward handling failed: ${err.message}`);
+    sendMsg(agentdSocket, { type: 'hook_ack', requestId, success: false, error: err.message });
+  }
+}
+
+function disconnectFromAgentd(agentdSocket, paneId) {
+  if (!agentdSocket || agentdSocket.destroyed) return;
+  try {
+    sendMsg(agentdSocket, { type: 'unregister', paneId });
+    agentdSocket.end();
+  } catch {
+    // ignore
+  }
+}
+
 function readUserInput(promptText) {
   const readline = require('readline');
   const rl = readline.createInterface({
@@ -603,6 +1157,123 @@ function readUserInput(promptText) {
       resolve(answer);
     });
   });
+}
+
+async function askYesNo(promptText) {
+  const answer = await readUserInput(promptText);
+  return /^y(es)?$/i.test(String(answer || '').trim());
+}
+
+async function fetchChannels() {
+  try {
+    const data = await getJson('/v1/channels');
+    // API returns { channels: [...] }
+    return Array.isArray(data?.channels) ? data.channels : (Array.isArray(data) ? data : []);
+  } catch (err) {
+    console.error(`[agent] Failed to fetch channels: ${String(err?.message || err)}`);
+    return [];
+  }
+}
+
+async function promptForWorkConfig() {
+  const readline = require('readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const question = (prompt) => {
+    return new Promise((resolve) => {
+      rl.question(prompt, resolve);
+    });
+  };
+
+  try {
+    // Step 1: Channel selection
+    console.log('\n--- Channel Selection ---');
+    const channels = await fetchChannels();
+
+    let selectedChannels = [];
+
+    if (channels.length > 0) {
+      console.log('Available channels:');
+      channels.forEach((ch, i) => {
+        const desc = ch.description ? ` - ${ch.description}` : '';
+        console.log(`  ${i + 1}. ${ch.name}${desc}`);
+      });
+      console.log(`  0. Enter channel name manually`);
+
+      const channelInput = await question('\nSelect channels (comma-separated numbers, e.g. 1,3): ');
+      const selections = channelInput.split(',').map(s => s.trim()).filter(Boolean);
+
+      for (const sel of selections) {
+        const num = parseInt(sel, 10);
+        if (num === 0) {
+          const manualName = await question('Enter channel name: ');
+          if (manualName.trim()) selectedChannels.push(manualName.trim());
+        } else if (num >= 1 && num <= channels.length) {
+          selectedChannels.push(channels[num - 1].name);
+        } else {
+          console.warn(`  Invalid selection: ${sel}`);
+        }
+      }
+    } else {
+      console.log('No channels found on server.');
+      const manualName = await question('Enter channel name to subscribe: ');
+      if (manualName.trim()) selectedChannels.push(manualName.trim());
+    }
+
+    if (selectedChannels.length === 0) {
+      console.log('[agent] No channels selected. Channels can be assigned later via dashboard UI.');
+    }
+
+    // Deduplicate
+    selectedChannels = [...new Set(selectedChannels)];
+    console.log(`\nSelected channels: ${selectedChannels.join(', ')}`);
+
+    // Step 2: tmux mode selection (reuse promptForRunMode pattern)
+    console.log('\n--- Tmux Session Setup ---');
+    console.log('How would you like to run the Claude Code session?');
+    console.log('\n1. Automatic Mode (Recommended)');
+    console.log('   - A new tmux session will be created in the background.');
+    console.log('   - Claude Code will be started automatically.');
+    console.log('\n2. Manual Mode');
+    console.log('   - You start/manage the tmux session and Claude Code yourself.');
+    console.log('   - The agent will connect to your existing session.');
+    console.log('\n3. Skip (set up later)');
+    console.log('   - No tmux session now. When a task arrives, you will be prompted.');
+    console.log('   - Or use "request-session" from dashboard to trigger auto-setup.');
+    console.log('---------------------------------');
+
+    const choice = await question('Enter your choice (1, 2, or 3): ');
+    let tmuxTarget = null;
+
+    if (choice === '1') {
+      const defaultSessionName = `claude-agent-session-${Date.now()}`;
+      const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
+      const sessionName = sessionNameInput.trim() || defaultSessionName;
+      createTmuxSessionAndStartClaudeCode(sessionName, 'claude');
+      tmuxTarget = sessionName;
+    } else if (choice === '2') {
+      console.log('\nPlease start your tmux session and Claude Code now.');
+      const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
+      if (!manualTarget.trim()) {
+        console.error('Tmux target cannot be empty for Manual Mode.');
+        return null;
+      }
+      tmuxTarget = manualTarget.trim();
+    } else if (choice === '3') {
+      console.log('[agent] Tmux setup skipped. Will be configured when a task arrives.');
+      tmuxTarget = null;
+    } else {
+      console.error('Invalid choice. Please enter 1, 2, or 3.');
+      return null;
+    }
+
+    return { channels: selectedChannels, tmuxTarget };
+  } finally {
+    rl.close();
+  }
 }
 
 function parseFlag(args, name) {
@@ -1680,6 +2351,11 @@ async function main() {
     process.exit(1);
   }
 
+  if (cmd === 'agentd') {
+    await startAgentd();
+    return;
+  }
+
   if (cmd === 'heartbeat') {
     try {
       await heartbeat();
@@ -1715,108 +2391,29 @@ async function main() {
       process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
     }
 
-    // 1) Preserve legacy behavior first.
+    // 1) Preserve legacy behavior first (CWD/env needed by legacy hook).
     const exitCode = runLegacyHook(type);
 
-    // 2) Best-effort coordinator upload (must not affect hook outcome).
+    // 2) Best-effort coordinator upload via agentd IPC or direct fallback.
     try {
-      process.stderr.write(`[agent] ═══ Coordinator Upload Starting ═══\n`);
-      process.stderr.write(`[agent] Hook type: ${type}\n`);
-      process.stderr.write(`[agent] Pane ID: ${detectedPaneId || 'N/A'}\n`);
-      process.stderr.write(`[agent] Coordinator URL: ${coordinatorBaseUrl()}\n`);
-
-      // Detect Claude Code running status
-      let claudeRunning = false;
-      try {
-        claudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
-      } catch {
-        claudeRunning = false;
-      }
-
-      // Simple: Claude Code running = 'running', not running = 'idle'
-      const status = claudeRunning ? 'running' : 'idle';
-
-      console.log(`[agent] Sending heartbeat (status=${status})...`);
-      await heartbeat(status, '', {
-        pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
-        tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId, // UI display only
-        claude_detected: claudeRunning,
-      });
-      console.log(`[agent] Heartbeat sent successfully`);
-
-      console.log(`[agent] Emitting claude.hook event...`);
-      await emitEvent('claude.hook', {
-        hook: type,
-        cwd: process.cwd(),
-        pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
-        claude_detected: claudeRunning,
-        ts: new Date().toISOString(),
-      });
-      console.log(`[agent] claude.hook event emitted`);
-
-      if (type === 'completed') {
-        const agentId = getOrCreateAgentId();
-        console.log(`[agent] hook completed: agent_id=${agentId}, coordinator=${coordinatorBaseUrl()}`);
-
-        console.log(`[agent] Fetching current task from coordinator...`);
-        const current = await fetchCurrentTaskFromCoordinator();
-        console.log(`[agent] current task from coordinator: ${current ? JSON.stringify({ id: current.id, title: current.title, assigned_agent_id: current.assigned_agent_id }) : 'null'}`);
-
-        if (current && current.id) {
-          try {
-            console.log(`[agent] attempting to complete task ${current.id} as agent ${agentId}...`);
-            const result = await completeTask(current.id);
-
-            if (result) {
-              console.log(`[agent] ✓ Task ${current.id} completed successfully`);
-            } else {
-              console.error(`[agent] ✗ Task completion returned null (likely 409 conflict or 404)`);
-              console.error(`[agent] This usually means agent's current_task_id doesn't match the task being completed`);
-            }
-
-            await emitEvent('task.completed', {
-              task_id: current.id,
-              pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
-              ts: new Date().toISOString(),
-            }, `task.completed:${current.id}`);
-            // NOTE: clearCurrentTask() removed - Coordinator's CompleteTask automatically clears current_task_id
-          } catch (err) {
-            console.error(`[agent] ✗ Task completion failed with error: ${err.message}`);
-            console.error(`[agent] Stack: ${err.stack}`);
-            throw err; // Re-throw to be caught by outer try-catch
-          }
-
-          // Re-check Claude Code status after task completion
-          let finalClaudeRunning = false;
-          try {
-            finalClaudeRunning = detectClaudeCodeRunning(detectedTarget, detectedPaneId);
-          } catch {
-            finalClaudeRunning = false;
-          }
-
-          await heartbeat(finalClaudeRunning ? 'running' : 'idle', '', {
-            pane_id: detectedPaneId, // PRIMARY: Stable pane identifier
-            tmux_display: getPaneTarget(detectedPaneId) || detectedPaneId, // UI display only
-            claude_detected: finalClaudeRunning,
-          });
+      let ipcHandled = false;
+      if (detectedPaneId) {
+        process.stderr.write(`[agent] Attempting agentd IPC for pane=${detectedPaneId}...\n`);
+        ipcHandled = await tryHookViaAgentd(detectedPaneId, type);
+        if (ipcHandled) {
+          process.stderr.write(`[agent] Hook handled via agentd IPC\n`);
         } else {
-          console.warn(`[agent] ⚠️  No current task found in coordinator`);
-          console.warn(`[agent] Possible reasons:`);
-          console.warn(`[agent]   - Agent has no task assigned`);
-          console.warn(`[agent]   - Task already completed by another process`);
-          console.warn(`[agent]   - Agent ID mismatch between claim and completion`);
+          process.stderr.write(`[agent] agentd IPC not available, falling back to direct coordinator\n`);
         }
       }
+
+      if (!ipcHandled) {
+        await hookDirectCoordinator(type, detectedPaneId, detectedTarget);
+      }
     } catch (err) {
-      process.stderr.write(`[agent] ✗ Coordinator upload failed (ignored)\n`);
+      process.stderr.write(`[agent] Coordinator upload failed (ignored)\n`);
       process.stderr.write(`[agent] Error type: ${err?.constructor?.name || 'Unknown'}\n`);
       process.stderr.write(`[agent] Error message: ${String(err?.message || err)}\n`);
-      if (err?.errors && Array.isArray(err.errors)) {
-        process.stderr.write(`[agent] AggregateError contains ${err.errors.length} errors:\n`);
-        err.errors.forEach((e, i) => {
-          process.stderr.write(`[agent]   [${i + 1}] ${e?.message || e}\n`);
-        });
-      }
       if (err?.stack) {
         process.stderr.write(`[agent] Stack trace:\n${err.stack}\n`);
       }

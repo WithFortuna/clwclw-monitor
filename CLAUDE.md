@@ -122,6 +122,47 @@ COORDINATOR_URL=http://localhost:8080 node agent/clw-agent.js run
 - `AGENT_HEARTBEAT_INTERVAL_SEC` - Heartbeat frequency (default: `15`)
 - `AGENT_WORK_POLL_INTERVAL_SEC` - Task polling interval (default: `5`)
 
+### Docker Deployment
+
+The Coordinator can be deployed using Docker with Cloudflare Tunnel for external access:
+
+```bash
+# 1. Copy environment template
+cp .env.example .env
+
+# 2. Edit .env and configure:
+#    - CLOUDFLARED_TOKEN (get from: cloudflare tunnel create clwclw-coordinator)
+#    - COORDINATOR_DATABASE_URL (optional, uses in-memory store by default)
+#    - COORDINATOR_AUTH_TOKEN (optional, for API authentication)
+
+# 3. Start services
+docker-compose up -d
+
+# 4. Check logs
+docker-compose logs -f coordinator
+docker-compose logs -f cloudflared
+
+# 5. Health check
+curl http://localhost:8080/health
+
+# 6. Stop services
+docker-compose down
+```
+
+**Cloudflare Tunnel Setup:**
+
+1. Install cloudflared CLI: `brew install cloudflare/cloudflare/cloudflared` (macOS) or download from [Cloudflare](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/)
+2. Login: `cloudflared tunnel login`
+3. Create tunnel: `cloudflared tunnel create clwclw-coordinator`
+4. Copy the token from `~/.cloudflared/<tunnel-id>.json` and set `CLOUDFLARED_TOKEN` in `.env`
+5. Configure DNS in Cloudflare dashboard to route your domain to the tunnel
+6. Start the tunnel: `docker-compose up -d cloudflared`
+
+**Notes:**
+- Agent runs on the **host** (not containerized) to access local tmux sessions
+- On Linux, you may need to set `INTERNAL_PRIVATE_IP` to Docker bridge gateway IP (`docker network inspect bridge | grep Gateway`)
+- For production, use `COORDINATOR_DATABASE_URL` with Postgres/Supabase for persistence
+
 ### Legacy Remote (Claude-Code-Remote)
 
 ```bash

@@ -61,9 +61,15 @@ go run ./coordinator/cmd/coordinator
 
 다른 터미널에서:
 
+# 1. 먼저 로그인 (브라우저가 열리고 로그인 페이지로 이동)
 ```bash
-COORDINATOR_URL=http://localhost:8080 node agent/clw-agent.js heartbeat
+COORDINATOR_URL=http://localhost:8081 node agent/clw-agent.js login
 ```
+```bash
+# 3. 그 다음 work 실행 (저장된 토큰을 자동으로 사용)
+COORDINATOR_URL=http://localhost:8081 node agent/clw-agent.js work --channel backend-develop --tmux-target gno:0.1
+```
+
 
 UI의 Agents 표에 agent가 나타나고 `last_seen`이 갱신되는지 확인합니다.
 
@@ -119,7 +125,52 @@ Claude hooks가 `agent/clw-agent.js hook completed|waiting`을 호출하도록 �
 - 훅이 실행되고
 - in-flight task가 자동으로 `done` 처리되는지(UI에서) 확인합니다.
 
-## 4) Troubleshooting (자주 겪는 문제)
+## 4) Agent 모드별 실행 (local / prod)
+
+### 4.1 최초 로그인 (모드 선택 + 인증)
+
+```bash
+# 모드 미설정 시 interactive prompt 표시 (1=local, 2=prod)
+node agent/clw-agent.js login
+```
+
+### 4.2 Local 모드 (로컬 Coordinator)
+
+```bash
+# login 시 local 선택했으면 coordinator-url = http://localhost:8080 자동 저장
+# 이후 work/hook은 agent/local/data/ 경로 사용
+
+node agent/clw-agent.js work --channel backend-domain --tmux-target claude-code:1.0
+```
+
+### 4.3 Prod 모드 (원격 Coordinator)
+
+```bash
+# login 시 prod 선택 → Coordinator URL 입력 프롬프트
+# 이후 work/hook은 agent/prod/data/ 경로 사용
+
+AGENT_MODE=prod node agent/clw-agent.js work --channel backend-domain --tmux-target claude-code:1.0
+```
+
+### 4.4 모드 확인 / 리셋
+
+```bash
+# 현재 모드 확인
+cat agent/agent-mode.txt
+
+# 모드 리셋 (다음 login 시 다시 선택)
+rm agent/agent-mode.txt
+```
+
+### 4.5 Hook이 올바른 Coordinator를 찾는지 확인
+
+```bash
+# hook은 agent/{mode}/data/coordinator-url.txt 에서 URL을 읽음
+cat agent/local/data/coordinator-url.txt
+cat agent/prod/data/coordinator-url.txt
+```
+
+## 5) Troubleshooting (자주 겪는 문제)
 
 - UI가 안 뜸: Coordinator가 떠있는지(`curl http://localhost:8080/health`) 확인.
 - 이벤트가 UI에 안 보임: `COORDINATOR_AUTH_TOKEN`을 켰다면 UI에 API Key를 입력했는지 확인(또는 auth를 끄고 재시도).

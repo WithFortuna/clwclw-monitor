@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: coordinator/Dockerfile
+    ports:
+      - "${COORDINATOR_PORT:-8080}:8080"
+    environment:
+      - COORDINATOR_PORT=8080
+      - COORDINATOR_AUTH_TOKEN=${COORDINATOR_AUTH_TOKEN:-}
+      - COORDINATOR_DATABASE_URL=${COORDINATOR_DATABASE_URL:-}
+      - COORDINATOR_EVENT_RETENTION_DAYS=${COORDINATOR_EVENT_RETENTION_DAYS:-30}
+      - COORDINATOR_RETENTION_INTERVAL_HOURS=${COORDINATOR_RETENTION_INTERVAL_HOURS:-24}
+    env_file:
+      - ./.env
+    container_name: clwclw-coordinator
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    env_file:
+      - .env
+    extra_hosts:
+      # Linux에서는 host.docker.internal을 수동으로 매핑
+      - "host.docker.internal:${INTERNAL_PRIVATE_IP:-172.17.0.1}"
+    restart: unless-stopped
+    container_name: clwclw-tunnel
+
+networks:
+  clwclw-network:
+    driver: bridge

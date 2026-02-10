@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Development
+.env
+.env.local
+*.log
+tmp/
+temp/
+
+# Node.js (agent and Claude-Code-Remote)
+Claude-Code-Remote/node_modules/
+Claude-Code-Remote/.env
+Claude-Code-Remote/data/
+agent/data/
+
+# Tasks and planning
+tasks/
+RUNBOOK.md
+REQUIREMENTS.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+coordinator/coordinator

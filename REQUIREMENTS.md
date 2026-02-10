@@ -81,6 +81,30 @@
      - **수동 모드:** 사용자가 직접 `tmux` 세션을 시작하고, 해당 세션 정보를 에이전트에게 입력하여 연결한다.
   4. 세션이 성공적으로 설정되면 에이전트는 일반 작업 모드로 전환되고, `request_claude_session` 태스크는 자동으로 완료 처리된다.
 
+### 4.9 에이전트 인터랙티브 CLI 플로우
+- `login` 완료 후 자동으로 work 설정 진입 여부를 프롬프트로 물어봄
+- `work` 명령을 `--channel` 없이 실행하면 인터랙티브 프롬프트 진입
+- 인터랙티브 프롬프트에서 채널 목록을 API로 조회하여 번호로 선택 (복수 선택 가능)
+- tmux 모드는 기존 자동/수동 선택 재활용
+- 기존 `--channel`, `--tmux-target` 플래그 기반 동작은 하위 호환 유지
+
+### 4.10 UI 기반 에이전트 채널 할당 (추후 구현)
+- Agent 모델에 `subscriptions []string` 필드 추가
+- `PATCH /v1/agents/:id/channels` API 추가
+- 대시보드 UI에서 에이전트별 채널 할당/해제 기능
+- agent work 루프에서 서버 채널 구독 정보를 polling하여 동적 채널 변경
+
+### 4.11 Agent IPC (Unix Domain Socket)
+- 유저당 1개의 `agentd` 데몬이 UDS(Unix Domain Socket)를 listen
+- worker(work 커맨드)는 시작 시 agentd에 register (paneId, agentId, mode, coordinatorUrl)
+- hook 프로세스는 agentd에 `hook_request`를 전송, agentd가 paneId 기준으로 올바른 worker에게 라우팅
+- worker가 coordinator API 호출 후 `hook_ack`를 agentd에 전송, agentd가 hook에게 결과 전달
+- agentd 미실행 시 hook은 기존 파일 기반 fallback (hookDirectCoordinator) 사용
+- worker는 시작 시 agentd가 없으면 detached child로 자동 시작
+- 프로토콜: NDJSON (newline-delimited JSON), 모든 메시지에 `type`과 `id` 포함
+- 소켓 경로: `$XDG_RUNTIME_DIR/clwclw/agentd.sock` 또는 `~/.clwclw/run/agentd.sock`
+- 싱글턴 보장: `agentd.pid` lock file로 중복 실행 방지
+
 ## 5. 비기능 요구사항
 - **경량 인프라** 지향 (최소 비용)
 - 실시간성: 웹뷰에서 상태 변화가 빠르게 반영될 것
