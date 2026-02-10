@@ -1282,6 +1282,392 @@ function formatTaskForInjection(task) {
   return combined.replace(/\s+/g, ' ').trim();
 }
 
+function agentLogin() {
+  const { exec } = require('child_process');
+  const baseUrl = coordinatorBaseUrl();
+
+  return new Promise((resolveLogin, rejectLogin) => {
+    // Start a temporary HTTP server to receive the callback
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url, `http://localhost`);
+      if (url.pathname === '/callback') {
+        const code = url.searchParams.get('code');
+        if (code) {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><body style="background:#0a0a0a;color:#6ee7b7;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh"><h2>Agent authenticated successfully! You can close this tab.</h2></body></html>');
+          exchangeCodeForToken(code).then(() => {
+            server.close();
+            resolveLogin();
+          }).catch((err) => {
+            console.error(`[agent] Failed to exchange code: ${err.message}`);
+            server.close();
+            rejectLogin(err);
+          });
+        } else {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('Missing code parameter');
+        }
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    });
+
+    let timeoutHandle;
+
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      const authUrl = `${baseUrl}/agent-auth.html?callback_port=${port}&agent_name=${encodeURIComponent(agentName())}`;
+      console.log(`[agent] Opening browser for authentication...`);
+      console.log(`[agent] URL: ${authUrl}`);
+      console.log(`[agent] Waiting for callback on port ${port}...`);
+
+      // Open browser
+      const platform = process.platform;
+      if (platform === 'darwin') {
+        exec(`open "${authUrl}"`);
+      } else if (platform === 'linux') {
+        exec(`xdg-open "${authUrl}" 2>/dev/null || sensible-browser "${authUrl}" 2>/dev/null`);
+      } else if (platform === 'win32') {
+        exec(`start "" "${authUrl}"`);
+      } else {
+        console.log(`[agent] Please open this URL in your browser: ${authUrl}`);
+      }
+
+      // Timeout after 5 minutes
+      timeoutHandle = setTimeout(() => {
+        console.error('[agent] Authentication timed out (5 minutes)');
+        server.close();
+        rejectLogin(new Error('Authentication timed out'));
+      }, 5 * 60 * 1000);
+    });
+  });
+}
+
+async function exchangeCodeForToken(code) {
+  const baseUrl = coordinatorBaseUrl();
+  const url = new URL('/v1/auth/agent-token', baseUrl);
+
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ code });
+    const mod = url.protocol === 'https:' ? https : http;
+    const req = mod.request(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`Server responded with ${res.statusCode}: ${body}`));
+          return;
+        }
+        try {
+          const data = JSON.parse(body);
+          if (!data.token) {
+            reject(new Error('No token in response'));
+            return;
+          }
+
+          // Save the token to mode root (not instance dir)
+          const dir = modeDataDir();
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          fs.writeFileSync(path.join(dir, 'agent-token.txt'), data.token + '\n', 'utf8');
+          console.log(`[agent] Token saved to ${path.join(dir, 'agent-token.txt')}`);
+          console.log(`[agent] Authenticated as user: ${data.username} (${data.user_id})`);
+          resolve();
+        } catch (e) {
+          reject(new Error(`Failed to parse response: ${e.message}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function startWorkLoop(channels, initialTarget) {
+  // Persist coordinator URL so hooks can discover it (hooks run in separate shell without env vars)
+  // Always write to mode root, not instance dir
+  const persistDir = modeDataDir();
+  ensureDir(persistDir);
+  fs.writeFileSync(path.join(persistDir, 'coordinator-url.txt'), coordinatorBaseUrl() + '\n', 'utf8');
+
+  // CRITICAL: Convert #S:#I.#P to pane ID immediately (pane ID is the stable identifier)
+  let tmuxPaneId = initialTarget ? tmuxPaneIdForTarget(initialTarget) : '';
+
+  // Deprecated: Keep tmuxTarget for backward compatibility (will be removed in future)
+  // All connection logic should use tmuxPaneId instead
+  let tmuxTarget = initialTarget || '';
+  let tmuxSession = tmuxTargetSession(initialTarget);
+
+  const pollSec = Math.max(2, parseInt(process.env.AGENT_WORK_POLL_INTERVAL_SEC || '2', 10) || 2);
+  let rrIndex = 0;
+  let lastPromptHash = '';
+  let channelPollCounter = 0;
+  const channelPollInterval = Math.max(1, Math.ceil(30 / pollSec)); // ~30 seconds
+
+  let agentdSocket = null;
+
+  // Cleanup agentd connection on shutdown
+  const cleanupAgentd = () => {
+    if (agentdSocket && tmuxPaneId) {
+      disconnectFromAgentd(agentdSocket, tmuxPaneId);
+      agentdSocket = null;
+    }
+  };
+  process.on('SIGINT', cleanupAgentd);
+  process.on('SIGTERM', cleanupAgentd);
+  process.on('exit', cleanupAgentd);
+
+  console.log(`[agent] worker started: channels=${channels.length ? channels.join(',') : '(none, waiting for server assignment)'} poll=${pollSec}s`);
+  if (tmuxPaneId) {
+    const state = configureStateDirForWork(tmuxPaneId);
+    if (!(process.env.AGENT_NAME || '').trim() && state.label) {
+      process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
+    }
+    console.log(`[agent] attached to initial pane: pane_id=${tmuxPaneId} (from target: ${initialTarget})`);
+
+    // Register with agentd for IPC hook routing
+    ensureAgentdRunning();
+    agentdSocket = await connectToAgentd(tmuxPaneId, getOrCreateAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
+    if (agentdSocket) {
+      setupAgentdListener(agentdSocket, initialTarget, tmuxPaneId, channels);
+      agentdSocket.on('close', () => { agentdSocket = null; });
+      agentdSocket.on('error', () => { agentdSocket = null; });
+    }
+  } else if (initialTarget) {
+    console.warn(`[agent] WARNING: Could not resolve pane ID from target: ${initialTarget}`);
+    console.log('[agent] waiting for a task to configure session...');
+  } else {
+    console.log('[agent] waiting for a task to configure session...');
+  }
+
+  // Channel polling helper — called from both STATE 1 and STATE 2
+  async function pollChannelsFromServer() {
+    channelPollCounter++;
+    const shouldPoll = channels.length === 0
+      ? true  // poll every cycle when no channels
+      : channelPollCounter % channelPollInterval === 0;
+
+    if (!shouldPoll) return;
+
+    try {
+      const agentId = getOrCreateAgentId();
+      const serverAgent = await getJson(`/v1/agents/${agentId}`);
+      const serverSubs = Array.isArray(serverAgent?.agent?.meta?.subscriptions)
+        ? serverAgent.agent.meta.subscriptions.filter(Boolean).sort()
+        : [];
+      const currentSorted = [...channels].sort();
+      if (JSON.stringify(serverSubs) !== JSON.stringify(currentSorted) && serverSubs.length > 0) {
+        const old = channels.join(',') || '(none)';
+        channels = [...serverSubs];
+        rrIndex = 0;
+        console.log(`[agent] channels updated from server: [${old}] → [${channels.join(',')}]`);
+      }
+    } catch {
+      // best-effort; ignore errors
+    }
+  }
+
+  while (true) {
+    // STATE 1: SETUP MODE (No tmux target)
+    // ===================================
+    // Only accepts request_claude_session tasks.
+    // Regular tasks are left in the queue for other agents.
+    // On receiving a session request: auto-creates tmux + claude code.
+    if (!tmuxTarget) {
+      // Poll for channel updates from server (UI may have assigned channels)
+      await pollChannelsFromServer();
+
+      // Look for request_claude_session tasks (don't use claimTask — it would grab any task)
+      let sessionTask = null;
+      if (channels.length > 0) {
+        try {
+          // Resolve channel names to IDs
+          const channelData = await getJson('/v1/channels');
+          const allChannels = channelData?.channels || [];
+          const subscribedIds = new Set();
+          for (const ch of allChannels) {
+            if (channels.includes(ch.name)) subscribedIds.add(ch.id);
+          }
+
+          // Find queued request_claude_session tasks in our channels
+          if (subscribedIds.size > 0) {
+            const tasksData = await getJson('/v1/tasks?status=queued');
+            const allTasks = tasksData?.tasks || [];
+            sessionTask = allTasks.find(t =>
+              t.type === 'request_claude_session' &&
+              t.status === 'queued' &&
+              subscribedIds.has(t.channel_id)
+            );
+          }
+        } catch (err) {
+          // best-effort; ignore and retry next cycle
+        }
+      }
+
+      if (!sessionTask) {
+        await heartbeat('idle', '', {
+          subscriptions: channels,
+          work_channels: channels,
+          state: 'setup_waiting',
+        });
+        await sleep(pollSec * 1000);
+        continue;
+      }
+
+      // Assign the session request task to self
+      const agentId = getOrCreateAgentId();
+      try {
+        await postJson('/v1/tasks/assign', {
+          task_id: sessionTask.id,
+          agent_id: agentId,
+          idempotency_key: `setup:${sessionTask.id}:${agentId}`,
+        });
+      } catch (err) {
+        console.error(`[agent] failed to assign session request task: ${err.message}`);
+        await sleep(pollSec * 1000);
+        continue;
+      }
+
+      // Auto-create tmux session + start claude code
+      const sessionName = `claude-agent-${Date.now()}`;
+      console.log(`[agent] received request_claude_session, auto-creating tmux: ${sessionName}`);
+      createTmuxSessionAndStartClaudeCode(sessionName, 'claude');
+
+      // Wait briefly for tmux session to initialize
+      await sleep(1000);
+
+      // Resolve pane ID
+      tmuxPaneId = tmuxPaneIdForTarget(sessionName);
+      if (!tmuxPaneId) {
+        console.error(`[agent] Failed to resolve pane ID from auto-created session: ${sessionName}`);
+        await failTask(sessionTask.id, `Failed to resolve pane ID for session: ${sessionName}`).catch(console.error);
+        await sleep(pollSec * 2000);
+        continue;
+      }
+
+      tmuxTarget = sessionName;
+      tmuxSession = tmuxTargetSession(sessionName);
+
+      const state = configureStateDirForWork(tmuxPaneId);
+      if (!(process.env.AGENT_NAME || '').trim() && state.label) {
+        process.env.AGENT_NAME = `${os.hostname()}@${state.label}`;
+      }
+
+      console.log(`[agent] tmux session ready: pane_id=${tmuxPaneId} session=${sessionName}`);
+      await emitEvent('agent.automation.target_set', { pane_id: tmuxPaneId, session_name: sessionName });
+
+      // Register with agentd for IPC hook routing
+      ensureAgentdRunning();
+      agentdSocket = await connectToAgentd(tmuxPaneId, getOrCreateAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
+      if (agentdSocket) {
+        setupAgentdListener(agentdSocket, sessionName, tmuxPaneId, channels);
+        agentdSocket.on('close', () => { agentdSocket = null; });
+        agentdSocket.on('error', () => { agentdSocket = null; });
+      }
+
+      // Complete the session request task
+      await completeTask(sessionTask.id);
+      console.log(`[agent] request_claude_session completed, transitioning to STATE 2`);
+
+      await sleep(pollSec * 1000);
+      continue;
+    }
+
+    // STATE 2: MAIN WORKER MODE (tmuxTarget is set)
+    // ============================================
+    let inFlight = await fetchCurrentTaskFromCoordinator().catch(() => null);
+
+    if (inFlight && inFlight.id) {
+      const taskId = inFlight.id;
+      let prompt = null;
+      let claudeRunning = false;
+      try {
+        claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId);
+        if (claudeRunning) {
+          const cap = tmuxCapture(tmuxTarget, 120, tmuxPaneId);
+          prompt = detectInteractivePrompt(cap);
+        }
+      } catch {}
+
+      const promptHash = prompt ? sha1hex(JSON.stringify(prompt)) : '';
+      if (prompt && promptHash !== lastPromptHash) {
+        lastPromptHash = promptHash;
+        await emitEvent('task.prompt', { task_id: taskId, ...prompt }, `task.prompt:${taskId}:${promptHash}`, taskId);
+      }
+      if (!prompt) lastPromptHash = '';
+
+      await heartbeat(claudeRunning ? 'running' : 'idle', taskId, {
+        pane_id: tmuxPaneId, // PRIMARY: Stable pane identifier
+        tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId, // UI display only
+        subscriptions: channels,
+        work_channels: channels,
+      });
+
+    } else { // No task in flight, try to claim one
+      let task = null;
+      let claimedFromChannel = '';
+      for (let i = 0; i < channels.length; i++) {
+        const ch = channels[(rrIndex + i) % channels.length];
+        try {
+          const t = await claimTask(ch);
+          if (t) {
+            task = t;
+            claimedFromChannel = ch;
+            rrIndex = (rrIndex + i + 1) % channels.length;
+            break;
+          }
+        } catch (err) {
+          console.error(`[agent] claim error: ${String(err?.message || err)}`);
+          await sleep(pollSec * 2000);
+          break;
+        }
+      }
+
+      if (!task) {
+        let claudeRunning = false;
+        try { claudeRunning = detectClaudeCodeRunning(tmuxTarget, tmuxPaneId); } catch {}
+        await heartbeat(claudeRunning ? 'running' : 'idle', '', {
+          pane_id: tmuxPaneId, // PRIMARY: Stable pane identifier
+          tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId, // UI display only
+          subscriptions: channels,
+          work_channels: channels,
+          claude_detected: claudeRunning,
+        });
+      } else { // New task claimed, inject it
+        try {
+          const executionMode = String(task.execution_mode || '').trim();
+          if (executionMode) {
+            console.log(`[agent] Switching to execution mode: ${executionMode}`);
+            const modeSwitchSuccess = switchToMode(tmuxTarget, executionMode, tmuxPaneId);
+            if (!modeSwitchSuccess) throw new Error(`Failed to switch to mode: ${executionMode}`);
+            await emitEvent('mode_switched', { task_id: task.id, target_mode: executionMode }, `mode_switched:${task.id}`, task.id);
+          }
+
+          const payload = formatTaskForInjection(task);
+          tmuxInject(tmuxTarget, payload, tmuxPaneId);
+          await emitEvent('task.injected', { task_id: task.id, payload }, `task.injected:${task.id}`, task.id);
+        } catch (err) {
+          console.error(`[agent] inject failed for task ${task.id}: ${String(err?.message || err)}`);
+          await failTask(task.id, `Task injection failed: ${err.message}`).catch(console.error);
+        }
+      }
+    }
+    // Poll for channel updates from server (UI may have changed channels)
+    await pollChannelsFromServer();
+
+    await sleep(pollSec * 1000);
+  }
+}
+
 async function main() {
   // Best-effort: load Coordinator config from existing Claude-Code-Remote .env
   // so that hooks can work without requiring users to export env vars manually.
@@ -1529,6 +1915,58 @@ async function main() {
       console.error(`[agent] failed to request session: ${String(err?.message || err)}`);
       process.exit(2);
     }
+  }
+
+  if (cmd === 'login') {
+    // Mode selection (if not yet configured)
+    let mode = getDeployMode();
+    if (!mode) {
+      console.log('\n  Agent Mode Selection:');
+      console.log('  1) local  - Connect to local coordinator (localhost)');
+      console.log('  2) prod   - Connect to remote/deployed coordinator');
+      const choice = await readUserInput('\n  Select mode (1 or 2): ');
+      mode = choice.trim() === '2' ? 'prod' : 'local';
+      setDeployMode(mode);
+      console.log(`[agent] Mode set to: ${mode}`);
+    } else {
+      console.log(`[agent] Using mode: ${mode}`);
+    }
+
+    // For prod mode, prompt for COORDINATOR_URL if not set via env
+    if (mode === 'prod' && !(process.env.COORDINATOR_URL || '').trim()) {
+      const url = await readUserInput('  Coordinator URL: ');
+      if (url.trim()) {
+        const dir = modeDataDir();
+        ensureDir(dir);
+        fs.writeFileSync(path.join(dir, 'coordinator-url.txt'), url.trim() + '\n', 'utf8');
+        console.log(`[agent] Coordinator URL saved to ${path.join(dir, 'coordinator-url.txt')}`);
+      }
+    }
+
+    // For local mode, persist default localhost URL
+    if (mode === 'local') {
+      const dir = modeDataDir();
+      ensureDir(dir);
+      fs.writeFileSync(path.join(dir, 'coordinator-url.txt'), 'http://localhost:8080\n', 'utf8');
+    }
+
+    try {
+      await agentLogin();
+      console.log('[agent] Login successful.');
+    } catch (err) {
+      console.error(`[agent] Login failed: ${String(err?.message || err)}`);
+      process.exit(2);
+    }
+
+    // After login, offer to start work immediately
+    const proceed = await askYesNo('\nStart agent work now? (y/n): ');
+    if (proceed) {
+      const config = await promptForWorkConfig();
+      if (config) {
+        await startWorkLoop(config.channels, config.tmuxTarget);
+      }
+    }
+    return;
   }
 
   if (cmd === 'work') {

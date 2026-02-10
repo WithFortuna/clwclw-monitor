@@ -15,13 +15,15 @@ var (
 )
 
 type TaskFilter struct {
+	UserID    string
 	ChannelID string
-	ChainID   string // New field for filtering by chain
+	ChainID   string
 	Status    model.TaskStatus
 	Limit     int
 }
 
 type EventFilter struct {
+	UserID  string
 	AgentID string
 	TaskID  string
 	Limit   int
@@ -70,15 +72,15 @@ type ClaimTaskInputRequest struct {
 type Store interface {
 	UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, error)
 	GetAgent(ctx context.Context, id string) (*model.Agent, error)
-	ListAgents(ctx context.Context) ([]model.Agent, error)
+	ListAgents(ctx context.Context, userID string) ([]model.Agent, error)
 
 	CreateChannel(ctx context.Context, ch model.Channel) (model.Channel, error)
-	ListChannels(ctx context.Context) ([]model.Channel, error)
+	ListChannels(ctx context.Context, userID string) ([]model.Channel, error)
 	GetChannelByName(ctx context.Context, name string) (model.Channel, error)
 
 	CreateChain(ctx context.Context, c model.Chain) (model.Chain, error)
 	GetChain(ctx context.Context, id string) (model.Chain, error)
-	ListChains(ctx context.Context, channelID string) ([]model.Chain, error)
+	ListChains(ctx context.Context, userID string, channelID string) ([]model.Chain, error)
 	UpdateChain(ctx context.Context, c model.Chain) (model.Chain, error)
 	DeleteChain(ctx context.Context, id string) error
 
@@ -94,4 +96,11 @@ type Store interface {
 
 	CreateTaskInput(ctx context.Context, req CreateTaskInputRequest) (model.TaskInput, error)
 	ClaimTaskInput(ctx context.Context, req ClaimTaskInputRequest) (*model.TaskInput, error)
+
+	CreateUser(ctx context.Context, u model.User) (model.User, error)
+	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
+
+	CreateAuthCode(ctx context.Context, code model.AuthCode) error
+	ConsumeAuthCode(ctx context.Context, code string) (*model.AuthCode, error)
 }

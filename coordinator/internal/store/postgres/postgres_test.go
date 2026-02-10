@@ -314,7 +314,7 @@ func TestPostgresStore_ChainCRUD(t *testing.T) {
 	assert.True(t, updatedChain.UpdatedAt.After(chain.UpdatedAt))
 
 	// Test ListChains
-	listedChains, err := s.ListChains(ctx, ch.ID)
+	listedChains, err := s.ListChains(ctx, "", ch.ID)
 	assert.NoError(t, err)
 	assert.Len(t, listedChains, 1)
 	assert.Equal(t, updatedChain.ID, listedChains[0].ID)

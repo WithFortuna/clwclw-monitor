@@ -98,7 +98,6 @@ func TestHandleTasks_AutoCreateChain(t *testing.T) {
 }
 
 func TestHandleTasks_WithProvidedChainID(t *testing.T) {
-	ctx := context.Background()
 	server := newTestServer(t)
 
 	// 1. Create a channel
@@ -200,12 +199,11 @@ func TestHandleTasks_NonExistentChainID(t *testing.T) {
 	taskReq := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(taskBody))
 	server.handleTasks(taskRec, taskReq)
 
-	if taskRec.Code != http.StatusNotFound { // Expecting StatusNotFound because GetChain returns ErrNotFound
-		t.Fatalf("Expected status %d, got %d: %s", http.StatusNotFound, taskRec.Code, taskRec.Body.String())
+	if taskRec.Code != http.StatusBadRequest {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusBadRequest, taskRec.Code, taskRec.Body.String())
 	}
 
-	expectedErrorMsg := fmt.Sprintf("chain_id not found: not found for id %s", nonExistentChainID)
-	if !strings.Contains(taskRec.Body.String(), expectedErrorMsg) && !strings.Contains(taskRec.Body.String(), "chain_id not found") {
-		t.Errorf("Expected error message containing '%s', got '%s'", expectedErrorMsg, taskRec.Body.String())
+	if !strings.Contains(taskRec.Body.String(), "chain_id_not_found") {
+		t.Errorf("Expected error message containing 'chain_id_not_found', got '%s'", taskRec.Body.String())
 	}
 }
