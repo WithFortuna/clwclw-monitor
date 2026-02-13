@@ -1,7 +1,7 @@
 ## Acknowledgements
 
 This project is based on the ideas and original implementation of
-[original-project-name](https://github.com/xxx/yyy),
+[Claude-Code-Remote](https://github.com/JessyTsui/Claude-Code-Remote),
 licensed under the MIT License.
 
-This is a full rewrite in <New Language> with additional features.
+This project is going to fully rewrite in <New Language> with additional features.
