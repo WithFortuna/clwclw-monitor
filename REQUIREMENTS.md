@@ -51,6 +51,37 @@
 - FIFO claim은 **원자적(atomic)** 으로 수행되어 중복 할당이 발생하지 않아야 함
 - **Chain 기반 태스크 관리**: 기존 Task 단위로 관리되던 큐잉 시스템을 Chain 단위로 변경한다. 이는 여러 Task가 논리적으로 연결된 경우 이를 하나의 작업 흐름(Chain)으로 간주하여 관리하고 처리하는 것을 의미한다. Chain 내의 Task들은 순차적으로 처리될 수 있으며, Chain 전체의 상태를 추적할 수 있다.
 
+#### 4.4.1 Chain Ownership 및 독점성 (Exclusivity)
+- **Chain-level ownership**: Agent는 동시에 하나의 Chain에 대해서만 소유권을 가질 수 있다
+- **Ownership 획득**: Agent가 Chain의 첫 번째 Task를 claim하면 해당 Chain의 소유권을 자동으로 획득한다
+- **Ownership 유지**: Agent가 Chain을 소유하는 동안 다른 Chain의 Task를 claim할 수 없다
+- **독점적 접근**: Chain을 소유한 Agent만 해당 Chain의 Task를 claim할 수 있다. 같은 채널을 구독하는 다른 Agent는 소유된 Chain의 Task를 claim할 수 없다
+- **Ownership 해제**: Chain의 모든 Task가 완료되거나 실패하면 소유권이 자동으로 해제된다
+- **Detach 메커니즘**: Agent는 명시적으로 Chain ownership을 해제할 수 있다 (수동 detach)
+
+#### 4.4.2 Detach 및 Locked Task 처리
+- **Detach 동작**: Agent를 Chain에서 분리하면 현재 `in_progress` 상태인 Task는 `locked` 상태로 전환된다
+  - Chain의 `owner_agent_id`가 초기화된다
+  - Chain 상태가 `locked`로 변경된다
+  - Agent의 `current_task_id`가 초기화된다
+- **Locked 상태**: Task/Chain이 Agent 분리로 인해 중단된 상태를 나타내는 새로운 상태값
+  - Task 상태: `queued` / `in_progress` / `done` / `failed` / **`locked`**
+  - Chain 상태: `queued` / `in_progress` / `done` / `failed` / **`locked`**
+- **Locked Task 해결**: UI에서 locked 상태의 Task를 수동으로 해결할 수 있다
+  - `locked → queued`: Task를 다시 대기열로 되돌린다 (`assigned_agent_id`, `claimed_at` 초기화)
+  - `locked → done`: Task를 완료 처리한다 (`done_at` 설정)
+  - 해결 후 Chain 상태는 남은 Task들의 상태에 따라 자동 재평가된다
+- **Claim 제한**: Chain에 `locked` 상태 Task가 존재하면 해당 Chain의 Task를 claim할 수 없다
+- **UI 요소**:
+  - Chain 카드 헤더에 소유 Agent 이름 표시 및 Detach 버튼 제공
+  - Locked Task는 In Progress 컬럼에 시각적으로 구분되어 표시 (dashed border, amber 색상)
+  - Locked Task에 "→ Queued" / "→ Done" 버튼으로 상태 전환
+  - Agent 미할당 또는 locked 상태의 Chain에 Agent 할당 드롭다운 제공
+- **API 엔드포인트**:
+  - `POST /v1/chains/{id}/detach` — Agent를 Chain에서 분리
+  - `POST /v1/tasks/{id}/status` — Locked Task 상태 전환 (locked→queued 또는 locked→done만 허용)
+  - `POST /v1/chains/{id}/assign-agent` — Chain에 Agent 할당
+
 ### 4.5 작업 이력 정의
 - 태스크를 수행한 경우: 태스크 수행 로그를 작업 이력으로 기록
 - 태스크 미할당 상태에서 실행된 명령: **사용자 명령 자체가 작업 이력**
@@ -98,6 +129,8 @@
 - `PATCH /v1/agents/:id/channels` API 추가
 - 대시보드 UI에서 에이전트별 채널 할당/해제 기능
 - agent work 루프에서 서버 채널 구독 정보를 polling하여 동적 채널 변경
+- 구독 채널 인라인 편집 UX는 `Enter`/입력창 외부 클릭(blur) 시 저장 요청, `Esc` 시 취소되어야 하며 저장/취소 후 포커스가 해제되어야 한다.
+- 구독 채널 인라인 편집 시 저장 요청 상태(예: saving/saved/error)를 UI에서 확인할 수 있어야 한다.
 
 ### 4.11 Agent IPC (Unix Domain Socket)
 - 유저당 1개의 `agentd` 데몬이 UDS(Unix Domain Socket)를 listen
