@@ -8,19 +8,21 @@ import (
 )
 
 type Server struct {
-	cfg   config.Config
-	store store.Store
-	mux   *http.ServeMux
-	bus   *eventBus
+	cfg     config.Config
+	store   store.Store
+	mux     *http.ServeMux
+	bus     *eventBus
+	notifTk *notificationTracker
 }
 
 func NewServer(cfg config.Config, st store.Store) *Server {
 	initJWTKey(cfg.JWTSecret)
 	s := &Server{
-		cfg:   cfg,
-		store: st,
-		mux:   http.NewServeMux(),
-		bus:   newEventBus(),
+		cfg:     cfg,
+		store:   st,
+		mux:     http.NewServeMux(),
+		bus:     newEventBus(),
+		notifTk: newNotificationTracker(),
 	}
 	s.registerRoutes()
 	return s
@@ -55,7 +57,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/channels", s.handleChannels)
 	s.mux.HandleFunc("GET /v1/channels/by-name/{name}", s.handleGetChannelByName)
 	s.mux.HandleFunc("/v1/chains", s.handleChains)
+	s.mux.HandleFunc("POST /v1/chains/{id}/detach", s.handleChainDetach)
+	s.mux.HandleFunc("POST /v1/chains/{id}/assign-agent", s.handleChainAssignAgent)
 	s.mux.HandleFunc("/v1/chains/{id}", s.handleChain)
+	s.mux.HandleFunc("POST /v1/tasks/{id}/status", s.handleTaskUpdateStatus)
 	s.mux.HandleFunc("/v1/tasks", s.handleTasks)
 	s.mux.HandleFunc("/v1/tasks/claim", s.handleTasksClaim)
 	s.mux.HandleFunc("/v1/tasks/assign", s.handleTasksAssign)

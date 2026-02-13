@@ -83,33 +83,35 @@ type Channel struct {
 }
 
 type Chain struct {
-	ID          string      `json:"id"`
-	UserID      string      `json:"user_id,omitempty"`
-	ChannelID   string      `json:"channel_id"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Status      ChainStatus `json:"status"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
+	ID           string      `json:"id"`
+	UserID       string      `json:"user_id,omitempty"`
+	ChannelID    string      `json:"channel_id"`
+	Name         string      `json:"name"`
+	Description  string      `json:"description,omitempty"`
+	Status       ChainStatus `json:"status"`
+	OwnerAgentID string      `json:"owner_agent_id,omitempty"` // Agent that owns this chain
+	CreatedAt    time.Time   `json:"created_at"`
+	UpdatedAt    time.Time   `json:"updated_at"`
 }
 
 type Task struct {
-	ID              string        `json:"id"`
-	UserID          string        `json:"user_id,omitempty"`
-	ChainID         string        `json:"chain_id,omitempty"` // New field to link to a chain
-	Sequence        int           `json:"sequence,omitempty"` // New field for order within a chain
-	ChannelID       string        `json:"channel_id"`
-	Title           string        `json:"title"`
-	Description     string        `json:"description,omitempty"`
-	Type            string        `json:"type,omitempty"`
-	Status          TaskStatus    `json:"status"`
-	Priority        int           `json:"priority"`
-	AssignedAgentID string        `json:"assigned_agent_id,omitempty"`
-	ExecutionMode   ExecutionMode `json:"execution_mode,omitempty"` // Claude Code execution mode
-	CreatedAt       time.Time     `json:"created_at"`
-	ClaimedAt       *time.Time    `json:"claimed_at,omitempty"`
-	DoneAt          *time.Time    `json:"done_at,omitempty"`
-	UpdatedAt       time.Time     `json:"updated_at"`
+	ID                       string        `json:"id"`
+	UserID                   string        `json:"user_id,omitempty"`
+	ChainID                  string        `json:"chain_id,omitempty"` // New field to link to a chain
+	Sequence                 int           `json:"sequence,omitempty"` // New field for order within a chain
+	ChannelID                string        `json:"channel_id"`
+	Title                    string        `json:"title"`
+	Description              string        `json:"description,omitempty"`
+	Type                     string        `json:"type,omitempty"`
+	AgentSessionRequestToken string        `json:"agent_session_request_token,omitempty"`
+	Status                   TaskStatus    `json:"status"`
+	Priority                 int           `json:"priority"`
+	AssignedAgentID          string        `json:"assigned_agent_id,omitempty"`
+	ExecutionMode            ExecutionMode `json:"execution_mode,omitempty"` // Claude Code execution mode
+	CreatedAt                time.Time     `json:"created_at"`
+	ClaimedAt                *time.Time    `json:"claimed_at,omitempty"`
+	DoneAt                   *time.Time    `json:"done_at,omitempty"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 type Event struct {
