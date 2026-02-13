@@ -768,7 +768,22 @@ async function main() {
         openPromptModal(task_id);
         return;
       }
-      if (action === 'complete') {
+      if (action === 'detach') {
+        const chainId = btn.getAttribute('data-chain-id');
+        const agentId = btn.getAttribute('data-agent-id');
+        if (!chainId || !agentId) return;
+        await api(`/v1/chains/${encodeURIComponent(chainId)}/detach`, {
+          method: 'POST',
+          body: JSON.stringify({ agent_id: agentId }),
+        });
+      } else if (action === 'task-status') {
+        const status = btn.getAttribute('data-status');
+        if (!task_id || !status) return;
+        await api(`/v1/tasks/${encodeURIComponent(task_id)}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status }),
+        });
+      } else if (action === 'complete') {
         await api('/v1/tasks/complete', {
           method: 'POST',
           body: JSON.stringify({ task_id }),
@@ -786,6 +801,24 @@ async function main() {
           body: JSON.stringify({ task_id, agent_id }),
         });
       }
+      await refresh();
+    } catch (err) {
+      showError(err);
+    }
+  });
+
+  // Agent assignment dropdown on chain cards
+  els.taskBoard.addEventListener('change', async (ev) => {
+    const dropdown = ev.target?.closest?.('.agent-assign-dropdown');
+    if (!dropdown) return;
+    const chainId = dropdown.getAttribute('data-chain-id');
+    const agentId = dropdown.value;
+    if (!chainId || !agentId) return;
+    try {
+      await api(`/v1/chains/${encodeURIComponent(chainId)}/assign-agent`, {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId }),
+      });
       await refresh();
     } catch (err) {
       showError(err);
