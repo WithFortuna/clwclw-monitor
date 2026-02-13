@@ -6,18 +6,20 @@ import (
 )
 
 const (
-	EventAgents   = "agents"
-	EventTasks    = "tasks"
-	EventChannels = "channels"
-	EventChains   = "chains"
-	EventInputs   = "inputs"
-	EventEvents   = "events"
-	EventUpdate   = "update"
+	EventAgents       = "agents"
+	EventTasks        = "tasks"
+	EventChannels     = "channels"
+	EventChains       = "chains"
+	EventInputs       = "inputs"
+	EventEvents       = "events"
+	EventUpdate       = "update"
+	EventNotification = "notification"
 )
 
 type busEvent struct {
-	Type string    `json:"type"`
-	Time time.Time `json:"time"`
+	Type    string         `json:"type"`
+	Time    time.Time      `json:"time"`
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type subscriber struct {
@@ -53,10 +55,14 @@ func (b *eventBus) Unsubscribe(ch chan busEvent) {
 }
 
 func (b *eventBus) Publish(typ string, userID string) {
+	b.PublishWithPayload(typ, userID, nil)
+}
+
+func (b *eventBus) PublishWithPayload(typ string, userID string, payload map[string]any) {
 	if typ == "" {
 		typ = EventUpdate
 	}
-	ev := busEvent{Type: typ, Time: time.Now().UTC()}
+	ev := busEvent{Type: typ, Time: time.Now().UTC(), Payload: payload}
 
 	b.mu.Lock()
 	for _, sub := range b.subs {
