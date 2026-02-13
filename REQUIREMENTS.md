@@ -80,6 +80,11 @@
      - **자동 모드:** 에이전트가 백그라운드에서 `tmux` 세션을 직접 생성하고 `claude` 명령어를 실행한다. 사용자는 `tmux attach` 명령어로 세션에 접속할 수 있다.
      - **수동 모드:** 사용자가 직접 `tmux` 세션을 시작하고, 해당 세션 정보를 에이전트에게 입력하여 연결한다.
   4. 세션이 성공적으로 설정되면 에이전트는 일반 작업 모드로 전환되고, `request_claude_session` 태스크는 자동으로 완료 처리된다.
+  5. `request_claude_session` 완료 처리는 일반 `task.completed` 이벤트와 분리된 전용 이벤트(`agent.automation.session_request.completed`)로 수행한다.
+     - Coordinator는 세션 요청 태스크 생성 시 `agent_session_request_token`을 함께 발급한다.
+     - Agent는 세션 할당/자동 실행이 완료되면 전용 이벤트 payload에 canonical 키 `agent_session_request_token`만 포함해 전송한다.
+     - Coordinator는 `agent_session_request_token`(및 선택적으로 `task_id`)으로 대상 세션 요청 태스크를 식별하여 `done`으로 전이한다.
+     - 전용 완료 이벤트 처리 시 task 상태 전이가 실패하면 성공으로 무시하지 않고 명시적으로 에러를 반환한다.
 
 ### 4.9 에이전트 인터랙티브 CLI 플로우
 - `login` 완료 후 자동으로 work 설정 진입 여부를 프롬프트로 물어봄

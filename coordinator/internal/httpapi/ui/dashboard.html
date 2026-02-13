@@ -146,6 +146,29 @@
       </div>
     </div>
 
+    <!-- Toast Container (top-right floating popups) -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Notification Bell (always visible) -->
+    <button id="notifBell" class="notification-bell">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      <span id="notifBadge" class="notification-badge" style="display:none;">0</span>
+    </button>
+
+    <!-- Notification Panel (history list, opens on bell click) -->
+    <div id="notifPanel" class="notification-panel hidden">
+      <div class="notification-panel-header">
+        <span class="notification-panel-title">Notifications</span>
+        <button id="notifPanelClose" class="btn" style="padding:4px 8px;font-size:11px;">Close</button>
+      </div>
+      <div id="notifList" class="notification-list">
+        <div class="muted" style="padding:12px;text-align:center;">No notifications</div>
+      </div>
+    </div>
+
     <footer class="footer">
       <div>Polling-based MVP. Real-time (SSE/WS/Supabase Realtime) will come later.</div>
     </footer>

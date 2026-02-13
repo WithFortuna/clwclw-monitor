@@ -207,3 +207,115 @@ func TestHandleTasks_NonExistentChainID(t *testing.T) {
 		t.Errorf("Expected error message containing 'chain_id_not_found', got '%s'", taskRec.Body.String())
 	}
 }
+
+func TestHandleEvents_SessionRequestCompletedByToken(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1) channel
+	createChannelReq := map[string]string{"name": "session-req-channel"}
+	channelBody, _ := json.Marshal(createChannelReq)
+	channelRec := httptest.NewRecorder()
+	channelReq := httptest.NewRequest(http.MethodPost, "/v1/channels", bytes.NewReader(channelBody))
+	server.handleChannels(channelRec, channelReq)
+	if channelRec.Code != http.StatusCreated {
+		t.Fatalf("failed to create channel: %s", channelRec.Body.String())
+	}
+	var channelResp map[string]model.Channel
+	_ = json.NewDecoder(channelRec.Body).Decode(&channelResp)
+	channelID := channelResp["channel"].ID
+
+	// 2) agent heartbeat (register agent)
+	heartbeatReq := map[string]any{
+		"agent_id": "11111111-1111-4111-8111-111111111111",
+		"name":     "test-agent",
+		"status":   "idle",
+	}
+	hbBody, _ := json.Marshal(heartbeatReq)
+	hbRec := httptest.NewRecorder()
+	hbHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/agents/heartbeat", bytes.NewReader(hbBody))
+	server.handleAgentsHeartbeat(hbRec, hbHTTPReq)
+	if hbRec.Code != http.StatusOK {
+		t.Fatalf("failed to heartbeat agent: %s", hbRec.Body.String())
+	}
+
+	// 3) request session task (queued)
+	reqSession := map[string]string{"channel_id": channelID}
+	reqBody, _ := json.Marshal(reqSession)
+	reqRec := httptest.NewRecorder()
+	reqHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/agents/request-session", bytes.NewReader(reqBody))
+	server.handleAgentsRequestSession(reqRec, reqHTTPReq)
+	if reqRec.Code != http.StatusCreated {
+		t.Fatalf("failed to create session request task: %s", reqRec.Body.String())
+	}
+	var reqResp map[string]model.Task
+	_ = json.NewDecoder(reqRec.Body).Decode(&reqResp)
+	task := reqResp["task"]
+	if task.AgentSessionRequestToken == "" {
+		t.Fatalf("expected session request token to be set")
+	}
+
+	// 4) assign task to agent (in_progress)
+	assignReq := map[string]string{
+		"task_id":  task.ID,
+		"agent_id": "11111111-1111-4111-8111-111111111111",
+	}
+	assignBody, _ := json.Marshal(assignReq)
+	assignRec := httptest.NewRecorder()
+	assignHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/assign", bytes.NewReader(assignBody))
+	server.handleTasksAssign(assignRec, assignHTTPReq)
+	if assignRec.Code != http.StatusOK {
+		t.Fatalf("failed to assign task: %s", assignRec.Body.String())
+	}
+
+	// 4-1) Force agent current_task_id mismatch to ensure token-gated completion still works.
+	heartbeatReq2 := map[string]any{
+		"agent_id":        "11111111-1111-4111-8111-111111111111",
+		"name":            "test-agent",
+		"status":          "idle",
+		"current_task_id": "22222222-2222-4222-8222-222222222222",
+	}
+	hbBody2, _ := json.Marshal(heartbeatReq2)
+	hbRec2 := httptest.NewRecorder()
+	hbHTTPReq2 := httptest.NewRequest(http.MethodPost, "/v1/agents/heartbeat", bytes.NewReader(hbBody2))
+	server.handleAgentsHeartbeat(hbRec2, hbHTTPReq2)
+	if hbRec2.Code != http.StatusOK {
+		t.Fatalf("failed to heartbeat agent (mismatch setup): %s", hbRec2.Body.String())
+	}
+
+	// 5) emit dedicated completion event with token
+	eventReq := map[string]any{
+		"agent_id": "11111111-1111-4111-8111-111111111111",
+		"type":     "agent.automation.session_request.completed",
+		"payload": map[string]any{
+			"agent_session_request_token": task.AgentSessionRequestToken,
+		},
+		"idempotency_key": "test-session-request-completed",
+	}
+	eventBody, _ := json.Marshal(eventReq)
+	eventRec := httptest.NewRecorder()
+	eventHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(eventBody))
+	server.handleEvents(eventRec, eventHTTPReq)
+	if eventRec.Code != http.StatusCreated {
+		t.Fatalf("failed to create completion event: %s", eventRec.Body.String())
+	}
+
+	// 6) verify task is done
+	tasksRec := httptest.NewRecorder()
+	tasksReq := httptest.NewRequest(http.MethodGet, "/v1/tasks?status=done", nil)
+	server.handleTasks(tasksRec, tasksReq)
+	if tasksRec.Code != http.StatusOK {
+		t.Fatalf("failed to list tasks: %s", tasksRec.Body.String())
+	}
+	var tasksResp map[string][]model.Task
+	_ = json.NewDecoder(tasksRec.Body).Decode(&tasksResp)
+	doneFound := false
+	for _, tsk := range tasksResp["tasks"] {
+		if tsk.ID == task.ID && tsk.Status == model.TaskStatusDone {
+			doneFound = true
+			break
+		}
+	}
+	if !doneFound {
+		t.Fatalf("expected session request task to be done after completion event")
+	}
+}

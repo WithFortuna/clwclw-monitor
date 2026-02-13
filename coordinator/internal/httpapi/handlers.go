@@ -69,6 +69,47 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
+
+	// Detect setup_waiting state and store + publish notification
+	metaState, _ := a.Meta["state"].(string)
+	if metaState == "setup_waiting" {
+		firstChan := ""
+		subs, _ := a.Meta["subscriptions"].([]any)
+		if len(subs) > 0 {
+			firstChan, _ = subs[0].(string)
+		}
+		msg := fmt.Sprintf("Agent '%s' is waiting for a Claude Code session.", a.Name)
+		if firstChan == "" {
+			msg += " Assign a channel first, then start a session."
+		} else {
+			msg += " Start one?"
+		}
+
+		notif := Notification{
+			Key:       a.ID + ":setup_waiting",
+			UserID:    userID,
+			AgentID:   a.ID,
+			AgentName: a.Name,
+			Type:      "setup_waiting",
+			Channel:   firstChan,
+			Message:   msg,
+			CreatedAt: time.Now().UTC(),
+		}
+		s.notifTk.Add(notif)
+
+		if s.notifTk.ShouldNotify(a.ID, "setup_waiting") {
+			s.bus.PublishWithPayload(EventNotification, userID, map[string]any{
+				"notification_type": "setup_waiting",
+				"agent_id":          a.ID,
+				"agent_name":        a.Name,
+				"channel":           firstChan,
+				"message":           msg,
+			})
+		}
+	} else {
+		s.notifTk.ClearByAgent(a.ID, "setup_waiting")
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
 
@@ -143,15 +184,31 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// This creates a special task that signals headless agents to prompt for setup.
-	task, err := s.store.CreateTask(r.Context(), model.Task{
+	// Auto-create a chain for this session request task
+	newChain, err := s.store.CreateChain(r.Context(), model.Chain{
 		UserID:      userID,
 		ChannelID:   channelID,
-		Title:       "Agent Session Request",
-		Description: "Automatic request for an agent on this channel to start a new Claude session.",
-		Type:        "request_claude_session",
-		Status:      model.TaskStatusQueued,
-		Priority:    100, // High priority
+		Name:        "Session Request",
+		Description: "Auto-created chain for agent session request",
+		Status:      model.ChainStatusQueued,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", fmt.Sprintf("failed to create chain for session request: %v", err))
+		return
+	}
+
+	// This creates a special task that signals headless agents to prompt for setup.
+	task, err := s.store.CreateTask(r.Context(), model.Task{
+		UserID:                   userID,
+		ChannelID:                channelID,
+		ChainID:                  newChain.ID,
+		Sequence:                 1,
+		Title:                    "Agent Session Request",
+		Description:              "Automatic request for an agent on this channel to start a new Claude session.",
+		Type:                     "request_claude_session",
+		AgentSessionRequestToken: newAgentSessionRequestToken(),
+		Status:                   model.TaskStatusQueued,
+		Priority:                 100, // High priority
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", fmt.Sprintf("failed to create session request task: %v", err))
@@ -908,6 +965,98 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
 			return
+		}
+
+		eventTaskID := strings.TrimSpace(req.TaskID)
+
+		if strings.EqualFold(strings.TrimSpace(req.Type), "agent.automation.session_request.completed") {
+			token := extractSessionRequestToken(req.Payload)
+			if token == "" {
+				writeError(w, http.StatusBadRequest, "invalid_request", "agent_session_request_token is required for session request completion event")
+				return
+			}
+
+			// Find session request task by token (+optional task_id), then complete deterministically.
+			candidateTaskID := strings.TrimSpace(req.TaskID)
+			if candidateTaskID == "" {
+				candidateTaskID = extractSessionRequestTaskID(req.Payload)
+			}
+			if eventTaskID == "" {
+				eventTaskID = candidateTaskID
+			}
+
+			allTasks, err := s.store.ListTasks(r.Context(), store.TaskFilter{
+				UserID: userID,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
+				return
+			}
+
+			var selected *model.Task
+			var selectedByID *model.Task
+			var selectedInProgress *model.Task
+			var selectedDone *model.Task
+			for i := range allTasks {
+				t := &allTasks[i]
+				if t.Type != "request_claude_session" {
+					continue
+				}
+				if strings.TrimSpace(t.AgentSessionRequestToken) != token {
+					continue
+				}
+				if candidateTaskID != "" && t.ID == candidateTaskID {
+					selectedByID = t
+				}
+				if t.Status == model.TaskStatusInProgress && selectedInProgress == nil {
+					selectedInProgress = t
+				}
+				if t.Status == model.TaskStatusDone && selectedDone == nil {
+					selectedDone = t
+				}
+				if selected == nil {
+					selected = t
+				}
+			}
+
+			if selected == nil {
+				writeError(w, http.StatusNotFound, "not_found", "session request task not found for token")
+				return
+			}
+
+			target := selected
+			if candidateTaskID != "" {
+				if selectedByID == nil {
+					writeError(w, http.StatusConflict, "conflict", "task_id does not match token owner task")
+					return
+				}
+				target = selectedByID
+			} else if selectedInProgress != nil {
+				target = selectedInProgress
+			} else if selectedDone != nil {
+				target = selectedDone
+			}
+			eventTaskID = target.ID
+
+			switch target.Status {
+			case model.TaskStatusDone:
+				// already completed; idempotent no-op
+			case model.TaskStatusInProgress:
+				// For token-gated session request completion, bypass current_task_id coupling.
+				_, err = s.store.CompleteTask(r.Context(), store.CompleteTaskRequest{
+					TaskID:  target.ID,
+					AgentID: "",
+				})
+				if err != nil {
+					writeError(w, http.StatusConflict, "conflict", fmt.Sprintf("failed to complete session request task: %v", err))
+					return
+				}
+				s.bus.Publish(EventTasks, userID)
+				s.bus.Publish(EventChains, userID)
+			default:
+				writeError(w, http.StatusConflict, "conflict", "session request task is not in progress")
+				return
+			}
 		}
 
 		e, err := s.store.CreateEvent(r.Context(), model.Event{
