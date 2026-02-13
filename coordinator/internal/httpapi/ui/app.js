@@ -51,6 +51,13 @@ let lastChannels = [];
 let lastChains = [];
 let promptModalState = { taskId: '', agentId: '', event: null };
 
+// --- Notification State ---
+let notifications = [];        // full list from server (panel)
+let toasts = [];               // active toasts on screen
+let unseenCount = 0;           // badge count
+let isNotifPanelOpen = false;
+let toastIdCounter = 0;
+
 function getAuthToken() {
   return (localStorage.getItem('clw_jwt') || '').trim();
 }
@@ -93,6 +100,7 @@ function startStream() {
   const url = token ? `/v1/stream?token=${encodeURIComponent(token)}` : '/v1/stream';
   stream = new EventSource(url);
   stream.addEventListener('update', scheduleRefresh);
+  stream.addEventListener('notification', handleNotificationEvent);
   stream.addEventListener('hello', () => {});
   stream.onerror = () => {
     // Keep the UI usable even if SSE is unavailable; polling remains as fallback.
@@ -580,6 +588,138 @@ async function refresh() {
   renderEvents(events);
 }
 
+// --- Notification Functions ---
+
+// Fetch all notifications from server and render in panel
+async function fetchNotifications() {
+  try {
+    const data = await api('/v1/notifications');
+    notifications = (data.notifications || []).map(n => ({
+      key: n.key,
+      agentId: n.agent_id,
+      agentName: n.agent_name || n.agent_id,
+      type: n.type,
+      channel: n.channel || '',
+      message: n.message || '',
+      time: new Date(n.created_at),
+    }));
+    renderNotifPanel();
+  } catch { /* ignore */ }
+}
+
+// SSE push → show toast + bump unseen badge
+function handleNotificationEvent(e) {
+  try {
+    const data = JSON.parse(e.data);
+    const payload = data.payload || {};
+    const agentId = payload.agent_id || '';
+    const type = payload.notification_type || '';
+    if (!agentId || !type) return;
+
+    // Show toast
+    addToast({
+      agentId,
+      agentName: payload.agent_name || agentId,
+      type,
+      channel: payload.channel || '',
+      message: payload.message || '',
+    });
+
+    // Increment unseen badge
+    unseenCount++;
+    renderBellBadge();
+  } catch { /* ignore */ }
+}
+
+// --- Toast (floating popup, top-right) ---
+
+function addToast(data) {
+  const id = ++toastIdCounter;
+  toasts.push({ id, ...data });
+  renderToasts();
+  // Auto-dismiss after 15 seconds
+  setTimeout(() => removeToast(id), 15000);
+}
+
+function removeToast(id) {
+  toasts = toasts.filter(t => t.id !== id);
+  renderToasts();
+}
+
+function renderToasts() {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+
+  container.innerHTML = toasts.map(t => {
+    const hasChannel = !!t.channel;
+    const actionBtn = hasChannel
+      ? `<button class="btn primary toast-action-btn" data-toast-action="start"
+           data-agent-id="${escapeHtml(t.agentId)}" data-channel="${escapeHtml(t.channel)}"
+           data-toast-id="${t.id}">Start Session</button>`
+      : `<span class="muted" style="font-size:11px;">Assign channel first</span>`;
+    return `
+      <div class="toast-item" data-toast-id="${t.id}">
+        <div class="toast-content">
+          <div class="toast-title">Agent Setup Required</div>
+          <div class="toast-msg">${escapeHtml(t.message)}</div>
+          <div class="toast-actions">${actionBtn}</div>
+        </div>
+        <button class="toast-close" data-toast-dismiss="${t.id}">&times;</button>
+      </div>`;
+  }).join('');
+}
+
+// --- Bell Badge ---
+
+function renderBellBadge() {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  badge.textContent = String(unseenCount);
+  badge.style.display = unseenCount > 0 ? 'flex' : 'none';
+
+  const bell = document.getElementById('notifBell');
+  if (bell) bell.classList.toggle('has-notif', unseenCount > 0);
+}
+
+// --- Notification Panel (all history) ---
+
+function renderNotifPanel() {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+
+  if (!notifications.length) {
+    list.innerHTML = '<div class="muted" style="padding:12px;text-align:center;">No notifications</div>';
+    return;
+  }
+
+  // Show newest first
+  const sorted = [...notifications].reverse();
+  list.innerHTML = sorted.map(n => {
+    const timeStr = fmtTime(n.time.toISOString());
+    return `
+      <div class="notification-item">
+        <div class="notification-item-header">
+          <span class="notification-item-title">Agent Setup Required</span>
+          <span class="notification-item-time">${escapeHtml(timeStr)}</span>
+        </div>
+        <div class="notification-item-msg">${escapeHtml(n.message)}</div>
+      </div>`;
+  }).join('');
+}
+
+function toggleNotifPanel() {
+  isNotifPanelOpen = !isNotifPanelOpen;
+  const panel = document.getElementById('notifPanel');
+  if (panel) panel.classList.toggle('hidden', !isNotifPanelOpen);
+
+  if (isNotifPanelOpen) {
+    // Mark all as seen
+    unseenCount = 0;
+    renderBellBadge();
+    fetchNotifications();
+  }
+}
+
 async function main() {
   els.refreshBtn.addEventListener('click', () => refresh().catch(showError));
 
@@ -806,6 +946,61 @@ async function main() {
     });
     await refresh();
   });
+
+  // --- Notification Bell & Panel ---
+  const notifBell = document.getElementById('notifBell');
+  const notifPanelClose = document.getElementById('notifPanelClose');
+  const toastContainer = document.getElementById('toastContainer');
+
+  if (notifBell) {
+    notifBell.addEventListener('click', () => toggleNotifPanel());
+  }
+  if (notifPanelClose) {
+    notifPanelClose.addEventListener('click', () => {
+      isNotifPanelOpen = false;
+      const panel = document.getElementById('notifPanel');
+      if (panel) panel.classList.add('hidden');
+    });
+  }
+
+  // Close panel on outside click
+  document.addEventListener('click', (e) => {
+    if (!isNotifPanelOpen) return;
+    const panel = document.getElementById('notifPanel');
+    if (panel && !panel.contains(e.target) && notifBell && !notifBell.contains(e.target)) {
+      isNotifPanelOpen = false;
+      panel.classList.add('hidden');
+    }
+  });
+
+  // Toast actions (event delegation)
+  if (toastContainer) {
+    toastContainer.addEventListener('click', async (ev) => {
+      // X button to dismiss toast
+      const closeBtn = ev.target?.closest?.('[data-toast-dismiss]');
+      if (closeBtn) {
+        const id = Number(closeBtn.getAttribute('data-toast-dismiss'));
+        removeToast(id);
+        return;
+      }
+      // Start Session button on toast
+      const actionBtn = ev.target?.closest?.('[data-toast-action]');
+      if (actionBtn) {
+        const channel = actionBtn.getAttribute('data-channel') || '';
+        const toastId = Number(actionBtn.getAttribute('data-toast-id'));
+        if (channel) {
+          try {
+            await api('/v1/agents/request-session', {
+              method: 'POST',
+              body: JSON.stringify({ channel_name: channel }),
+            });
+            removeToast(toastId);
+            await refresh();
+          } catch (err) { showError(err); }
+        }
+      }
+    });
+  }
 
   await refresh();
   startStream();
