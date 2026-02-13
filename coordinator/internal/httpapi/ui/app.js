@@ -339,30 +339,30 @@ function renderTaskCol(title, tasks, opts = {}) {
   const variant = opts.variant || '';
   const items = tasks
     .map(
-      (t) => `
-      <div class="task task-${variant}">
-        <div class="task-title">${escapeHtml(t.title)}</div>
-        <div class="task-desc">${escapeHtml(t.description || '')}</div>
-        ${
-          variant === 'queued'
-            ? `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
-                 <button class="btn" data-action="assign" data-task-id="${escapeHtml(t.id)}">Assign…</button>
-               </div>`
-            : ''
-        }
-        ${
-          variant === 'in_progress'
-            ? `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
-                 ${
-                   lastPromptByTaskId.has(t.id)
-                     ? `<button class="btn" data-action="prompt" data-task-id="${escapeHtml(t.id)}">Prompt…</button>`
-                     : ''
-                 }
-                 <button class="btn" data-action="complete" data-task-id="${escapeHtml(t.id)}">Mark Done</button>
-                 <button class="btn danger" data-action="fail" data-task-id="${escapeHtml(t.id)}">Fail</button>
-                 <div class="muted" style="font-size:11px;">agent: ${escapeHtml(t.assigned_agent_id || '')}</div>
-               </div>`
-            : ''
+      (t) => {
+        const isLocked = t.status === 'locked';
+        const taskClass = isLocked ? 'task task-locked' : `task task-${variant}`;
+
+        let actions = '';
+        if (isLocked) {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            <button class="btn" data-action="task-status" data-task-id="${escapeHtml(t.id)}" data-status="queued">→ Queued</button>
+            <button class="btn" data-action="task-status" data-task-id="${escapeHtml(t.id)}" data-status="done">→ Done</button>
+            <div class="muted" style="font-size:11px;">locked</div>
+          </div>`;
+        } else if (variant === 'queued') {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            <button class="btn" data-action="assign" data-task-id="${escapeHtml(t.id)}">Assign…</button>
+          </div>`;
+        } else if (variant === 'in_progress') {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            ${lastPromptByTaskId.has(t.id)
+              ? `<button class="btn" data-action="prompt" data-task-id="${escapeHtml(t.id)}">Prompt…</button>`
+              : ''}
+            <button class="btn" data-action="complete" data-task-id="${escapeHtml(t.id)}">Mark Done</button>
+            <button class="btn danger" data-action="fail" data-task-id="${escapeHtml(t.id)}">Fail</button>
+            <div class="muted" style="font-size:11px;">agent: ${escapeHtml(t.assigned_agent_id || '')}</div>
+          </div>`;
         }
 
         return `
@@ -1099,6 +1099,13 @@ async function main() {
   }
 
   await refresh();
+  // Load initial unseen count from server
+  try {
+    const data = await api('/v1/notifications');
+    const list = data.notifications || [];
+    unseenCount = list.length;
+    renderBellBadge();
+  } catch { /* ignore */ }
   startStream();
 
   setInterval(() => {
