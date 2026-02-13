@@ -46,9 +46,11 @@ const els = {
 
 let lastTasksById = new Map();
 let lastChainsById = new Map();
+let lastAgentsById = new Map();
 let lastPromptByTaskId = new Map();
 let lastChannels = [];
 let lastChains = [];
+let lastAgents = [];
 let promptModalState = { taskId: '', agentId: '', event: null };
 
 // --- Notification State ---
@@ -174,6 +176,10 @@ function escapeHtml(str) {
 }
 
 function renderAgents(agents) {
+  // 인라인 편집 input이 실제 포커스 상태일 때만 리렌더링 스킵
+  const activeSubsInput = els.agentsTbody.querySelector('.subs-cell input');
+  if (activeSubsInput && document.activeElement === activeSubsInput) return;
+
   els.agentsCount.textContent = String(agents.length);
 
   if (!agents.length) {
@@ -186,7 +192,7 @@ function renderAgents(agents) {
       const name = a.name || a.id || '-';
       const subs = Array.isArray(a?.meta?.subscriptions) ? a.meta.subscriptions.join(', ') : '';
       // Display tmux info: prefer tmux_display (dynamically resolved #S:#I.#P from pane_id)
-      const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || a?.meta?.tmux_session || '';
+      const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
       const claudeStatus = a.claude_status || a.status || 'idle';
       const agentState = a?.meta?.state || '';
@@ -223,7 +229,7 @@ function renderAgents(agents) {
     .join('');
 }
 
-function renderTaskBoard(channels, chains, tasks) {
+function renderTaskBoard(channels, chains, tasks, agents) {
   if (!channels.length && !chains.length && !tasks.length) {
     els.taskBoard.innerHTML = `<div class="muted">No channels, chains, or tasks yet.</div>`;
     return;
@@ -237,66 +243,69 @@ function renderTaskBoard(channels, chains, tasks) {
     chainsByChannel.get(cid).push(ch);
   }
 
-  // Index tasks by chain
+  // Index tasks by chain (all tasks must belong to a chain)
   const tasksByChain = new Map();
-  const standaloneTasks = new Map(); // channel_id -> tasks without chain
   for (const t of tasks) {
-    if (t.chain_id) {
-      if (!tasksByChain.has(t.chain_id)) tasksByChain.set(t.chain_id, []);
-      tasksByChain.get(t.chain_id).push(t);
-    } else {
-      const cid = t.channel_id || 'unknown';
-      if (!standaloneTasks.has(cid)) standaloneTasks.set(cid, []);
-      standaloneTasks.get(cid).push(t);
-    }
+    const chainId = t.chain_id || 'unknown';
+    if (!tasksByChain.has(chainId)) tasksByChain.set(chainId, []);
+    tasksByChain.get(chainId).push(t);
   }
 
   const output = [];
 
   for (const channel of channels) {
     const channelChains = chainsByChannel.get(channel.id) || [];
-    const standalone = standaloneTasks.get(channel.id) || [];
-    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0) + standalone.length;
+    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0);
 
     let inner = '';
 
-    // Render each chain within this channel
+    // Render each chain within this channel (all tasks belong to a chain)
     for (const ch of channelChains) {
       const list = tasksByChain.get(ch.id) || [];
       if (!list.length) continue;
       const queued = list.filter((t) => t.status === 'queued').sort((a, b) => a.sequence - b.sequence);
-      const prog = list.filter((t) => t.status === 'in_progress').sort((a, b) => a.sequence - b.sequence);
+      const locked = list.filter((t) => t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
+      const prog = list.filter((t) => t.status === 'in_progress' || t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
       const done = list.filter((t) => t.status === 'done').sort((a, b) => a.sequence - b.sequence);
       const failed = list.filter((t) => t.status === 'failed').sort((a, b) => a.sequence - b.sequence);
 
-      inner += `
-        <div class="chain-group">
-          <div class="chain-title">
-            <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)}</div>
-            <span class="pill">${list.length} tasks</span>
-          </div>
-          <div class="board">
-            ${renderTaskCol('Queued', queued, { variant: 'queued' })}
-            ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
-            ${renderTaskCol('Done', done, { variant: 'done' })}
-            ${renderTaskCol('Failed', failed, { variant: 'failed' })}
-          </div>
-        </div>
-      `;
-    }
+      // Owner agent info
+      const ownerAgent = ch.owner_agent_id ? lastAgentsById.get(ch.owner_agent_id) : null;
+      const ownerName = ownerAgent ? (ownerAgent.name || ownerAgent.id) : '';
+      const isLocked = ch.status === 'locked' || locked.length > 0;
+      const hasOwner = !!ch.owner_agent_id;
 
-    // Render standalone tasks (no chain)
-    if (standalone.length) {
-      const queued = standalone.filter((t) => t.status === 'queued');
-      const prog = standalone.filter((t) => t.status === 'in_progress');
-      const done = standalone.filter((t) => t.status === 'done');
-      const failed = standalone.filter((t) => t.status === 'failed');
+      // Build agent assignment dropdown (online agents)
+      const onlineAgents = agents.filter(a => {
+        const ws = a.worker_status || deriveWorkerStatus(a.last_seen);
+        return ws === 'online';
+      });
+      let assignDropdown = '';
+      if (!hasOwner || isLocked) {
+        const opts = onlineAgents.map(a =>
+          `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`
+        ).join('');
+        assignDropdown = `<select class="agent-assign-dropdown" data-chain-id="${escapeHtml(ch.id)}">
+          <option value="">Assign agent…</option>${opts}
+        </select>`;
+      }
+
+      // Owner display with detach button
+      let ownerHtml = '';
+      if (hasOwner) {
+        ownerHtml = `<span class="chain-owner">${escapeHtml(ownerName)}</span>
+          <button class="detach-btn" data-action="detach" data-chain-id="${escapeHtml(ch.id)}" data-agent-id="${escapeHtml(ch.owner_agent_id)}" title="Detach agent">&times;</button>`;
+      } else {
+        ownerHtml = `<span class="muted" style="font-size:11px;">No agent</span>`;
+      }
+
+      const chainClass = isLocked ? 'chain-group chain-locked' : 'chain-group';
 
       inner += `
-        <div class="chain-group">
+        <div class="${chainClass}">
           <div class="chain-title">
-            <div class="chain-badge"><strong>Standalone</strong> Tasks</div>
-            <span class="pill">${standalone.length} tasks</span>
+            <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)} ${ownerHtml}</div>
+            <div style="display:flex;align-items:center;gap:8px;">${assignDropdown}<span class="pill">${list.length} tasks</span></div>
           </div>
           <div class="board">
             ${renderTaskCol('Queued', queued, { variant: 'queued' })}
@@ -355,12 +364,19 @@ function renderTaskCol(title, tasks, opts = {}) {
                </div>`
             : ''
         }
-        <div class="muted" style="margin-top:6px;font-size:11px;">
-          ${t.chain_id ? `chain: ${escapeHtml(t.chain_id)} seq: ${t.sequence}<br>` : ''}
-          ${escapeHtml(t.id)}
+
+        return `
+        <div class="${taskClass}">
+          <div class="task-title">${escapeHtml(t.title)}</div>
+          <div class="task-desc">${escapeHtml(t.description || '')}</div>
+          ${actions}
+          <div class="muted" style="margin-top:6px;font-size:11px;">
+            ${t.chain_id ? `chain: ${escapeHtml(t.chain_id)} seq: ${t.sequence}<br>` : ''}
+            ${escapeHtml(t.id)}
+          </div>
         </div>
-      </div>
-    `,
+      `;
+      },
     )
     .join('');
 
@@ -573,18 +589,20 @@ async function refresh() {
   const events = dash.events || [];
 
   lastTasksById = new Map(tasks.map((t) => [t.id, t]));
-  lastChainsById = new Map(chains.map((c) => [c.id, c])); // Populate lastChainsById
+  lastChainsById = new Map(chains.map((c) => [c.id, c]));
+  lastAgentsById = new Map(agents.map((a) => [a.id, a]));
   lastPromptByTaskId = computeLatestPrompts(events);
 
   lastChannels = channels;
   lastChains = chains;
+  lastAgents = agents;
 
   els.lastRefresh.textContent = fmtTime(new Date().toISOString());
   renderAgents(agents);
   fillChannelSelect(els.taskChannel, channels);
   fillChannelSelect(els.claimChannel, channels);
   fillChainSelect(els.taskChain, chains, els.taskChannel.value);
-  renderTaskBoard(channels, chains, tasks);
+  renderTaskBoard(channels, chains, tasks, agents);
   renderEvents(events);
 }
 
@@ -742,9 +760,8 @@ async function main() {
     const btn = ev.target?.closest?.('button[data-action]');
     if (!btn) return;
 
-    const task_id = btn.getAttribute('data-task-id');
-    if (!task_id && btn.getAttribute('data-action') !== 'prompt-option') return;
     const action = btn.getAttribute('data-action') || '';
+    const task_id = btn.getAttribute('data-task-id');
 
     try {
       if (action === 'prompt') {
