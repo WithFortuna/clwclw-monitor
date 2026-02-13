@@ -930,11 +930,32 @@ async function main() {
       await refresh().catch(() => {});
     };
 
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-      if (e.key === 'Escape') { e.preventDefault(); refresh().catch(() => {}); }
-    });
-    input.addEventListener('blur', save, { once: true });
+    const cancel = () => {
+      if (finished) return;
+      finished = true;
+      input.removeEventListener('keydown', onKeyDown);
+      input.removeEventListener('blur', onBlur);
+      if (document.activeElement === input) input.blur();
+      renderCellValue(currentSubs, 'cancelled');
+      refresh().catch(() => {});
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        save().catch(() => {});
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    };
+    const onBlur = () => {
+      save().catch(() => {});
+    };
+
+    input.addEventListener('keydown', onKeyDown);
+    input.addEventListener('blur', onBlur);
   });
 
   els.taskChannel.addEventListener('change', () => {
