@@ -246,16 +246,17 @@ func (s *Store) CreateChain(ctx context.Context, c model.Chain) (model.Chain, er
 
 	var out model.Chain
 	err := s.pool.QueryRow(ctx, `
-		insert into public.chains (channel_id, name, description, status, user_id)
-		values ($1::uuid, $2, nullif($3, ''), $4, nullif($5, '')::uuid)
-		returning id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
-	`, c.ChannelID, c.Name, c.Description, string(status), c.UserID).Scan(
+		insert into public.chains (channel_id, name, description, status, user_id, owner_agent_id)
+		values ($1::uuid, $2, nullif($3, ''), $4, nullif($5, '')::uuid, nullif($6, '')::uuid)
+		returning id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, coalesce(owner_agent_id::text, ''), created_at, updated_at
+	`, c.ChannelID, c.Name, c.Description, string(status), c.UserID, c.OwnerAgentID).Scan(
 		&out.ID,
 		&out.UserID,
 		&out.ChannelID,
 		&out.Name,
 		&out.Description,
 		&out.Status,
+		&out.OwnerAgentID,
 		&out.CreatedAt,
 		&out.UpdatedAt,
 	)
@@ -268,15 +269,17 @@ func (s *Store) CreateChain(ctx context.Context, c model.Chain) (model.Chain, er
 func (s *Store) GetChain(ctx context.Context, id string) (model.Chain, error) {
 	var out model.Chain
 	err := s.pool.QueryRow(ctx, `
-		select id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+		select id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, coalesce(owner_agent_id::text, ''), created_at, updated_at
 		from public.chains
 		where id = $1::uuid
 	`, id).Scan(
 		&out.ID,
+		&out.UserID,
 		&out.ChannelID,
 		&out.Name,
 		&out.Description,
 		&out.Status,
+		&out.OwnerAgentID,
 		&out.CreatedAt,
 		&out.UpdatedAt,
 	)
@@ -291,7 +294,7 @@ func (s *Store) GetChain(ctx context.Context, id string) (model.Chain, error) {
 
 func (s *Store) ListChains(ctx context.Context, userID string, channelID string) ([]model.Chain, error) {
 	query := `
-		select id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
+		select id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, coalesce(owner_agent_id::text, ''), created_at, updated_at
 		from public.chains
 	`
 	var args []any
@@ -325,6 +328,7 @@ func (s *Store) ListChains(ctx context.Context, userID string, channelID string)
 			&c.Name,
 			&c.Description,
 			&c.Status,
+			&c.OwnerAgentID,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		); err != nil {
@@ -342,15 +346,18 @@ func (s *Store) UpdateChain(ctx context.Context, c model.Chain) (model.Chain, er
 		set name = $2,
 		    description = nullif($3, ''),
 		    status = $4,
+		    owner_agent_id = nullif($5, '')::uuid,
 		    updated_at = now()
 		where id = $1::uuid
-		returning id::text, channel_id::text, name, coalesce(description, ''), status, created_at, updated_at
-	`, c.ID, c.Name, c.Description, string(c.Status)).Scan(
+		returning id::text, coalesce(user_id::text, ''), channel_id::text, name, coalesce(description, ''), status, coalesce(owner_agent_id::text, ''), created_at, updated_at
+	`, c.ID, c.Name, c.Description, string(c.Status), c.OwnerAgentID).Scan(
 		&out.ID,
+		&out.UserID,
 		&out.ChannelID,
 		&out.Name,
 		&out.Description,
 		&out.Status,
+		&out.OwnerAgentID,
 		&out.CreatedAt,
 		&out.UpdatedAt,
 	)
@@ -377,6 +384,213 @@ func (s *Store) DeleteChain(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) DetachAgentFromChain(ctx context.Context, req store.DetachAgentFromChainRequest) error {
+	if strings.TrimSpace(req.ChainID) == "" {
+		return errors.New("chain_id_required")
+	}
+	if strings.TrimSpace(req.AgentID) == "" {
+		return errors.New("agent_id_required")
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Verify chain ownership
+	var currentOwner string
+	err = tx.QueryRow(ctx, `
+		select coalesce(owner_agent_id::text, '')
+		from public.chains
+		where id = $1::uuid
+	`, req.ChainID).Scan(&currentOwner)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		return mapPgErr(err)
+	}
+
+	if currentOwner != req.AgentID {
+		return store.ErrConflict
+	}
+
+	// Set in_progress task to locked
+	_, err = tx.Exec(ctx, `
+		update public.tasks
+		set status = 'locked', updated_at = now()
+		where chain_id = $1::uuid
+		  and status = 'in_progress'
+	`, req.ChainID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+
+	// Clear chain ownership and set to locked
+	_, err = tx.Exec(ctx, `
+		update public.chains
+		set owner_agent_id = null,
+		    status = 'locked',
+		    updated_at = now()
+		where id = $1::uuid
+	`, req.ChainID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+
+	// Clear agent's current_task_id
+	_, err = tx.Exec(ctx, `
+		update public.agents
+		set current_task_id = null, updated_at = now()
+		where id = $1::uuid
+	`, req.AgentID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, newStatus model.TaskStatus) (*model.Task, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errors.New("task_id_required")
+	}
+
+	// Only allow locked → queued or locked → done
+	if newStatus != model.TaskStatusQueued && newStatus != model.TaskStatusDone {
+		return nil, store.ErrConflict
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, mapPgErr(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var t model.Task
+	if newStatus == model.TaskStatusQueued {
+		err = tx.QueryRow(ctx, `
+			update public.tasks
+			set status = 'queued',
+			    assigned_agent_id = null,
+			    claimed_at = null,
+			    updated_at = now()
+			where id = $1::uuid and status = 'locked'
+			returning id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0),
+			          title, coalesce(description, ''), coalesce(type, ''), status, priority,
+			          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
+		`, taskID).Scan(
+			&t.ID, &t.UserID, &t.ChannelID, &t.ChainID, &t.Sequence,
+			&t.Title, &t.Description, &t.Type, &t.Status, &t.Priority,
+			&t.AssignedAgentID, &t.ExecutionMode, &t.CreatedAt, &t.ClaimedAt, &t.DoneAt, &t.UpdatedAt,
+		)
+	} else {
+		err = tx.QueryRow(ctx, `
+			update public.tasks
+			set status = 'done',
+			    done_at = now(),
+			    updated_at = now()
+			where id = $1::uuid and status = 'locked'
+			returning id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0),
+			          title, coalesce(description, ''), coalesce(type, ''), status, priority,
+			          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
+		`, taskID).Scan(
+			&t.ID, &t.UserID, &t.ChannelID, &t.ChainID, &t.Sequence,
+			&t.Title, &t.Description, &t.Type, &t.Status, &t.Priority,
+			&t.AssignedAgentID, &t.ExecutionMode, &t.CreatedAt, &t.ClaimedAt, &t.DoneAt, &t.UpdatedAt,
+		)
+	}
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Check if task exists but isn't locked
+			var exists bool
+			_ = tx.QueryRow(ctx, `select exists(select 1 from public.tasks where id = $1::uuid)`, taskID).Scan(&exists)
+			if !exists {
+				return nil, store.ErrNotFound
+			}
+			return nil, store.ErrConflict
+		}
+		return nil, mapPgErr(err)
+	}
+
+	// Re-evaluate chain status
+	if t.ChainID != "" {
+		// Check chain tasks to determine new status
+		var hasLocked, hasInProgress, hasQueued bool
+		var allDoneOrFailed bool = true
+		var hasFailed bool
+
+		rows, err := tx.Query(ctx, `
+			select status from public.tasks where chain_id = $1::uuid
+		`, t.ChainID)
+		if err != nil {
+			return nil, mapPgErr(err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var st model.TaskStatus
+			if err := rows.Scan(&st); err != nil {
+				return nil, mapPgErr(err)
+			}
+			switch st {
+			case model.TaskStatusLocked:
+				hasLocked = true
+				allDoneOrFailed = false
+			case model.TaskStatusInProgress:
+				hasInProgress = true
+				allDoneOrFailed = false
+			case model.TaskStatusQueued:
+				hasQueued = true
+				allDoneOrFailed = false
+			case model.TaskStatusFailed:
+				hasFailed = true
+			}
+		}
+
+		var newChainStatus model.ChainStatus
+		clearOwner := false
+		if allDoneOrFailed {
+			clearOwner = true
+			if hasFailed {
+				newChainStatus = model.ChainStatusFailed
+			} else {
+				newChainStatus = model.ChainStatusDone
+			}
+		} else if hasLocked {
+			newChainStatus = model.ChainStatusLocked
+		} else if hasInProgress {
+			newChainStatus = model.ChainStatusInProgress
+		} else if hasQueued {
+			newChainStatus = model.ChainStatusQueued
+		}
+
+		if newChainStatus != "" {
+			if clearOwner {
+				_, err = tx.Exec(ctx, `
+					update public.chains set status = $1, owner_agent_id = null, updated_at = now() where id = $2::uuid
+				`, string(newChainStatus), t.ChainID)
+			} else {
+				_, err = tx.Exec(ctx, `
+					update public.chains set status = $1, updated_at = now() where id = $2::uuid
+				`, string(newChainStatus), t.ChainID)
+			}
+			if err != nil {
+				return nil, mapPgErr(err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, mapPgErr(err)
+	}
+
+	return &t, nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error) {
 	if strings.TrimSpace(t.ChannelID) == "" {
 		return model.Task{}, errors.New("channel_id_required")
@@ -384,11 +598,12 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 	if strings.TrimSpace(t.Title) == "" {
 		return model.Task{}, errors.New("title_required")
 	}
-	if strings.TrimSpace(t.ChainID) != "" {
-		// Verify chain exists
-		if _, err := s.GetChain(ctx, t.ChainID); err != nil {
-			return model.Task{}, fmt.Errorf("chain_id not found: %w", err)
-		}
+	if strings.TrimSpace(t.ChainID) == "" {
+		return model.Task{}, errors.New("chain_id_required")
+	}
+	// Verify chain exists
+	if _, err := s.GetChain(ctx, t.ChainID); err != nil {
+		return model.Task{}, fmt.Errorf("chain_id not found: %w", err)
 	}
 
 	status := t.Status
@@ -398,11 +613,11 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 
 	var out model.Task
 	err := s.pool.QueryRow(ctx, `
-		insert into public.tasks (channel_id, chain_id, sequence, title, description, type, status, priority, execution_mode, user_id)
-		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, nullif($9, ''), nullif($10, '')::uuid)
+		insert into public.tasks (channel_id, chain_id, sequence, title, description, type, agent_session_request_token, status, priority, execution_mode, user_id)
+		values ($1::uuid, nullif($2, '')::uuid, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), $8, $9, nullif($10, ''), nullif($11, '')::uuid)
 		returning id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
-		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
-	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, t.Type, string(status), t.Priority, string(t.ExecutionMode), t.UserID).Scan(
+		          coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), coalesce(agent_session_request_token, ''), created_at, claimed_at, done_at, updated_at
+	`, t.ChannelID, t.ChainID, t.Sequence, t.Title, t.Description, t.Type, t.AgentSessionRequestToken, string(status), t.Priority, string(t.ExecutionMode), t.UserID).Scan(
 		&out.ID,
 		&out.UserID,
 		&out.ChannelID,
@@ -415,6 +630,7 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 		&out.Priority,
 		&out.AssignedAgentID,
 		&out.ExecutionMode,
+		&out.AgentSessionRequestToken,
 		&out.CreatedAt,
 		&out.ClaimedAt,
 		&out.DoneAt,
@@ -429,7 +645,7 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task, error) {
 	query := `
 		select id::text, coalesce(user_id::text, ''), channel_id::text, coalesce(chain_id::text, ''), coalesce(sequence, 0), title, coalesce(description, ''), coalesce(type, ''), status, priority,
-		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), created_at, claimed_at, done_at, updated_at
+		       coalesce(assigned_agent_id::text, ''), coalesce(execution_mode, ''), coalesce(agent_session_request_token, ''), created_at, claimed_at, done_at, updated_at
 		from public.tasks
 	`
 	var where []string
@@ -482,6 +698,7 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 			&t.Priority,
 			&t.AssignedAgentID,
 			&t.ExecutionMode,
+			&t.AgentSessionRequestToken,
 			&t.CreatedAt,
 			&t.ClaimedAt,
 			&t.DoneAt,

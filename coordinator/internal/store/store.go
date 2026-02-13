@@ -69,6 +69,11 @@ type ClaimTaskInputRequest struct {
 	AgentID string `json:"agent_id"`
 }
 
+type DetachAgentFromChainRequest struct {
+	ChainID string `json:"chain_id"`
+	AgentID string `json:"agent_id"`
+}
+
 type Store interface {
 	UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, error)
 	GetAgent(ctx context.Context, id string) (*model.Agent, error)
@@ -83,6 +88,7 @@ type Store interface {
 	ListChains(ctx context.Context, userID string, channelID string) ([]model.Chain, error)
 	UpdateChain(ctx context.Context, c model.Chain) (model.Chain, error)
 	DeleteChain(ctx context.Context, id string) error
+	DetachAgentFromChain(ctx context.Context, req DetachAgentFromChainRequest) error
 
 	CreateTask(ctx context.Context, t model.Task) (model.Task, error)
 	ListTasks(ctx context.Context, f TaskFilter) ([]model.Task, error)
@@ -90,6 +96,7 @@ type Store interface {
 	AssignTask(ctx context.Context, req AssignTaskRequest) (*model.Task, error)
 	CompleteTask(ctx context.Context, req CompleteTaskRequest) (*model.Task, error)
 	FailTask(ctx context.Context, req FailTaskRequest) (*model.Task, error)
+	UpdateTaskStatus(ctx context.Context, taskID string, newStatus model.TaskStatus) (*model.Task, error)
 
 	CreateEvent(ctx context.Context, e model.Event) (model.Event, error)
 	ListEvents(ctx context.Context, f EventFilter) ([]model.Event, error)

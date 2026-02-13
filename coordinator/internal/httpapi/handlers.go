@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -232,6 +234,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	agent, err := s.store.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -239,6 +243,12 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// Verify user owns this agent
+	if agent.UserID != userID {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found")
 		return
 	}
 
@@ -318,6 +328,8 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	agent, err := s.store.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -325,6 +337,12 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// Verify user owns this agent
+	if agent.UserID != userID {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found")
 		return
 	}
 
@@ -568,6 +586,51 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+}
+
+func (s *Server) handleChainDetach(w http.ResponseWriter, r *http.Request) {
+	chainID := strings.TrimSpace(r.PathValue("id"))
+	if chainID == "" {
+		writeError(w, http.StatusBadRequest, "chain_id_required", "chain ID is required")
+		return
+	}
+
+	var req struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	if strings.TrimSpace(req.AgentID) == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent_id is required")
+		return
+	}
+
+	err := s.store.DetachAgentFromChain(r.Context(), store.DetachAgentFromChainRequest{
+		ChainID: chainID,
+		AgentID: req.AgentID,
+	})
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "chain not found")
+			return
+		}
+		if err == store.ErrConflict {
+			writeError(w, http.StatusConflict, "not_owner", "agent is not the owner of this chain")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to detach chain")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+	s.bus.Publish(EventChains, userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 type createTaskRequest struct {
