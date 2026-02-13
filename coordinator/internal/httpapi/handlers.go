@@ -69,6 +69,47 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	s.bus.Publish(EventAgents, userID)
 	s.invalidateDashboardCache()
+
+	// Detect setup_waiting state and store + publish notification
+	metaState, _ := a.Meta["state"].(string)
+	if metaState == "setup_waiting" {
+		firstChan := ""
+		subs, _ := a.Meta["subscriptions"].([]any)
+		if len(subs) > 0 {
+			firstChan, _ = subs[0].(string)
+		}
+		msg := fmt.Sprintf("Agent '%s' is waiting for a Claude Code session.", a.Name)
+		if firstChan == "" {
+			msg += " Assign a channel first, then start a session."
+		} else {
+			msg += " Start one?"
+		}
+
+		notif := Notification{
+			Key:       a.ID + ":setup_waiting",
+			UserID:    userID,
+			AgentID:   a.ID,
+			AgentName: a.Name,
+			Type:      "setup_waiting",
+			Channel:   firstChan,
+			Message:   msg,
+			CreatedAt: time.Now().UTC(),
+		}
+		s.notifTk.Add(notif)
+
+		if s.notifTk.ShouldNotify(a.ID, "setup_waiting") {
+			s.bus.PublishWithPayload(EventNotification, userID, map[string]any{
+				"notification_type": "setup_waiting",
+				"agent_id":          a.ID,
+				"agent_name":        a.Name,
+				"channel":           firstChan,
+				"message":           msg,
+			})
+		}
+	} else {
+		s.notifTk.ClearByAgent(a.ID, "setup_waiting")
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
 

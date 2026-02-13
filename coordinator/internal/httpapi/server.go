@@ -64,6 +64,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/tasks/inputs", s.handleTaskInputs)
 	s.mux.HandleFunc("/v1/tasks/inputs/claim", s.handleTaskInputsClaim)
 
+	s.mux.HandleFunc("GET /v1/notifications", s.handleNotificationsList)
+	s.mux.HandleFunc("POST /v1/notifications/dismiss", s.handleNotificationDismiss)
+
 	s.mux.HandleFunc("/v1/events", s.handleEvents)
 	s.mux.HandleFunc("/v1/stream", s.handleStream)
 	s.mux.HandleFunc("/v1/dashboard", s.handleDashboard)
