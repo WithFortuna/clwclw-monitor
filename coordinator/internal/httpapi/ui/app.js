@@ -890,17 +890,42 @@ async function main() {
     input.focus();
     input.select();
 
+    let finished = false;
+
+    const renderCellValue = (subsText, stateText = '') => {
+      const safeSubs = escapeHtml(subsText);
+      const valueHtml = safeSubs || '<span class="muted" style="opacity:0.5">click to assign</span>';
+      const stateHtml = stateText
+        ? ` <span class="muted" style="font-size:11px;opacity:0.85;">${escapeHtml(stateText)}</span>`
+        : '';
+      cell.setAttribute('data-subs', subsText);
+      cell.style.cursor = 'pointer';
+      cell.innerHTML = `${valueHtml}${stateHtml}`;
+    };
+
     const save = async () => {
+      if (finished) return;
+      finished = true;
+      input.removeEventListener('keydown', onKeyDown);
+      input.removeEventListener('blur', onBlur);
+      if (document.activeElement === input) input.blur();
+
       const val = input.value.trim();
       const subs = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const nextSubs = subs.join(', ');
+      renderCellValue(nextSubs, 'saving...');
+
       try {
         await api(`/v1/agents/${encodeURIComponent(agentId)}/channels`, {
           method: 'PATCH',
           body: JSON.stringify({ subscriptions: subs }),
         });
+        renderCellValue(nextSubs, 'saved');
       } catch (err) {
         showError(err);
+        renderCellValue(currentSubs, 'save failed');
       }
+
       // SSE will trigger refresh; do explicit refresh as fallback
       await refresh().catch(() => {});
     };
