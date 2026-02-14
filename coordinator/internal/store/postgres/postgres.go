@@ -427,16 +427,21 @@ func (s *Store) DetachAgentFromChain(ctx context.Context, req store.DetachAgentF
 		return mapPgErr(err)
 	}
 
-	// Clear chain ownership and set to locked
+	// Clear chain ownership first.
 	_, err = tx.Exec(ctx, `
 		update public.chains
 		set owner_agent_id = null,
-		    status = 'locked',
 		    updated_at = now()
 		where id = $1::uuid
 	`, req.ChainID)
 	if err != nil {
 		return mapPgErr(err)
+	}
+
+	// Re-evaluate chain status from current task states.
+	// Chain becomes locked only when at least one task is locked.
+	if err := s.reevaluateChainStatusTx(ctx, tx, req.ChainID, false); err != nil {
+		return err
 	}
 
 	// Clear agent's current_task_id
@@ -518,69 +523,8 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, newStatus m
 
 	// Re-evaluate chain status
 	if t.ChainID != "" {
-		// Check chain tasks to determine new status
-		var hasLocked, hasInProgress, hasQueued bool
-		var allDoneOrFailed bool = true
-		var hasFailed bool
-
-		rows, err := tx.Query(ctx, `
-			select status from public.tasks where chain_id = $1::uuid
-		`, t.ChainID)
-		if err != nil {
-			return nil, mapPgErr(err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var st model.TaskStatus
-			if err := rows.Scan(&st); err != nil {
-				return nil, mapPgErr(err)
-			}
-			switch st {
-			case model.TaskStatusLocked:
-				hasLocked = true
-				allDoneOrFailed = false
-			case model.TaskStatusInProgress:
-				hasInProgress = true
-				allDoneOrFailed = false
-			case model.TaskStatusQueued:
-				hasQueued = true
-				allDoneOrFailed = false
-			case model.TaskStatusFailed:
-				hasFailed = true
-			}
-		}
-
-		var newChainStatus model.ChainStatus
-		clearOwner := false
-		if allDoneOrFailed {
-			clearOwner = true
-			if hasFailed {
-				newChainStatus = model.ChainStatusFailed
-			} else {
-				newChainStatus = model.ChainStatusDone
-			}
-		} else if hasLocked {
-			newChainStatus = model.ChainStatusLocked
-		} else if hasInProgress {
-			newChainStatus = model.ChainStatusInProgress
-		} else if hasQueued {
-			newChainStatus = model.ChainStatusQueued
-		}
-
-		if newChainStatus != "" {
-			if clearOwner {
-				_, err = tx.Exec(ctx, `
-					update public.chains set status = $1, owner_agent_id = null, updated_at = now() where id = $2::uuid
-				`, string(newChainStatus), t.ChainID)
-			} else {
-				_, err = tx.Exec(ctx, `
-					update public.chains set status = $1, updated_at = now() where id = $2::uuid
-				`, string(newChainStatus), t.ChainID)
-			}
-			if err != nil {
-				return nil, mapPgErr(err)
-			}
+		if err := s.reevaluateChainStatusTx(ctx, tx, t.ChainID, true); err != nil {
+			return nil, err
 		}
 	}
 
@@ -589,6 +533,77 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, newStatus m
 	}
 
 	return &t, nil
+}
+
+func (s *Store) reevaluateChainStatusTx(ctx context.Context, tx pgx.Tx, chainID string, clearOwnerOnCompletion bool) error {
+	var hasLocked, hasInProgress, hasQueued bool
+	allDoneOrFailed := true
+	var hasFailed bool
+
+	rows, err := tx.Query(ctx, `
+		select status from public.tasks where chain_id = $1::uuid
+	`, chainID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var st model.TaskStatus
+		if err := rows.Scan(&st); err != nil {
+			return mapPgErr(err)
+		}
+		switch st {
+		case model.TaskStatusLocked:
+			hasLocked = true
+			allDoneOrFailed = false
+		case model.TaskStatusInProgress:
+			hasInProgress = true
+			allDoneOrFailed = false
+		case model.TaskStatusQueued:
+			hasQueued = true
+			allDoneOrFailed = false
+		case model.TaskStatusFailed:
+			hasFailed = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return mapPgErr(err)
+	}
+
+	var newChainStatus model.ChainStatus
+	clearOwner := false
+	if allDoneOrFailed {
+		clearOwner = clearOwnerOnCompletion
+		if hasFailed {
+			newChainStatus = model.ChainStatusFailed
+		} else {
+			newChainStatus = model.ChainStatusDone
+		}
+	} else if hasLocked {
+		newChainStatus = model.ChainStatusLocked
+	} else if hasInProgress {
+		newChainStatus = model.ChainStatusInProgress
+	} else if hasQueued {
+		newChainStatus = model.ChainStatusQueued
+	}
+
+	if newChainStatus == "" {
+		return nil
+	}
+	if clearOwner {
+		_, err = tx.Exec(ctx, `
+			update public.chains set status = $1, owner_agent_id = null, updated_at = now() where id = $2::uuid
+		`, string(newChainStatus), chainID)
+	} else {
+		_, err = tx.Exec(ctx, `
+			update public.chains set status = $1, updated_at = now() where id = $2::uuid
+		`, string(newChainStatus), chainID)
+	}
+	if err != nil {
+		return mapPgErr(err)
+	}
+	return nil
 }
 
 func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error) {
@@ -639,6 +654,15 @@ func (s *Store) CreateTask(ctx context.Context, t model.Task) (model.Task, error
 	if err != nil {
 		return model.Task{}, mapPgErr(err)
 	}
+
+	// If task belongs to a chain and chain is done, reactivate it to queued
+	if strings.TrimSpace(out.ChainID) != "" {
+		_, _ = s.pool.Exec(ctx, `
+			UPDATE public.chains SET status = 'queued', updated_at = NOW()
+			WHERE id = $1::uuid AND status = 'done'
+		`, out.ChainID)
+	}
+
 	return out, nil
 }
 

@@ -298,21 +298,20 @@ func (s *Store) DetachAgentFromChain(_ context.Context, req store.DetachAgentFro
 
 	now := time.Now().UTC()
 
-	// Find in_progress task in this chain and set it to locked
+	// Convert all in_progress tasks in this chain to locked
 	for id, t := range s.tasks {
 		if t.ChainID == chainID && t.Status == model.TaskStatusInProgress {
 			t.Status = model.TaskStatusLocked
 			t.UpdatedAt = now
 			s.tasks[id] = t
-			break
 		}
 	}
 
-	// Clear chain ownership and set chain status to locked
+	// Clear chain ownership, then re-evaluate chain status from task states.
+	// Chain is locked only when at least one task is locked.
 	chain.OwnerAgentID = ""
-	chain.Status = model.ChainStatusLocked
-	chain.UpdatedAt = now
 	s.chains[chainID] = chain
+	s.reevaluateChainStatus(chainID, now)
 
 	// Clear agent's current_task_id
 	if agent, ok := s.agents[agentID]; ok {
@@ -406,7 +405,7 @@ func (s *Store) reevaluateChainStatus(chainID string, now time.Time) {
 	}
 
 	if allDoneOrFailed {
-		chain.OwnerAgentID = ""
+		// Ownership persists until explicit detach (matching Postgres behavior)
 		if hasFailed {
 			chain.Status = model.ChainStatusFailed
 		} else {
@@ -452,6 +451,10 @@ func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) 
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	s.tasks[t.ID] = t
+
+	// Recalculate chain status (e.g., done → queued when new task added)
+	s.reevaluateChainStatus(t.ChainID, now)
+
 	return t, nil
 }
 
@@ -522,7 +525,7 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 	// Check if agent already owns a chain
 	var ownedChainID string
 	for _, chain := range s.chains {
-		if chain.OwnerAgentID == req.AgentID && chain.Status == model.ChainStatusInProgress {
+		if chain.OwnerAgentID == req.AgentID {
 			ownedChainID = chain.ID
 			break
 		}
@@ -536,8 +539,19 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 		}
 
 		chain, ok := s.chains[t.ChainID]
-		if !ok || (chain.Status != model.ChainStatusQueued && chain.Status != model.ChainStatusInProgress) {
+		if !ok {
 			continue
+		}
+		if ownedChainID != "" && t.ChainID == ownedChainID {
+			// Owned chain: allow unless locked
+			if chain.Status == model.ChainStatusLocked {
+				continue
+			}
+		} else {
+			// Non-owned chain: only queued or in_progress
+			if chain.Status != model.ChainStatusQueued && chain.Status != model.ChainStatusInProgress {
+				continue
+			}
 		}
 
 		// Skip chains that have any locked tasks
@@ -562,31 +576,19 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 			continue
 		}
 
-		// Check if this task is the next in sequence for its chain
-		if t.Sequence == 1 {
-			// If sequence is 1, it's eligible if no other task in this chain is in progress
-			hasInProgressInChain := false
-			for _, otherTask := range s.tasks {
-				if otherTask.ChainID == t.ChainID && otherTask.Status == model.TaskStatusInProgress {
-					hasInProgressInChain = true
-					break
-				}
+		// A task is eligible when no predecessor in the chain is queued or in_progress.
+		hasBlockingPredecessor := false
+		for _, otherTask := range s.tasks {
+			if otherTask.ChainID != t.ChainID || otherTask.Sequence >= t.Sequence {
+				continue
 			}
-			if !hasInProgressInChain {
-				eligibleChainTasks = append(eligibleChainTasks, t)
+			if otherTask.Status == model.TaskStatusQueued || otherTask.Status == model.TaskStatusInProgress {
+				hasBlockingPredecessor = true
+				break
 			}
-		} else {
-			// For tasks with sequence > 1, check if previous task is done
-			prevTaskDone := false
-			for _, otherTask := range s.tasks {
-				if otherTask.ChainID == t.ChainID && otherTask.Sequence == t.Sequence-1 && otherTask.Status == model.TaskStatusDone {
-					prevTaskDone = true
-					break
-				}
-			}
-			if prevTaskDone {
-				eligibleChainTasks = append(eligibleChainTasks, t)
-			}
+		}
+		if !hasBlockingPredecessor {
+			eligibleChainTasks = append(eligibleChainTasks, t)
 		}
 	}
 

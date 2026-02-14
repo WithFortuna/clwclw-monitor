@@ -172,15 +172,21 @@ func setupTestDB(t *testing.T) (*Store, func()) {
 			v_task_id uuid;
 			v_chain_id uuid;
 		BEGIN
-			-- 1. Try to claim the next sequential task in an existing 'in_progress' chain
+			-- 1. Try to claim the next sequential task when predecessors are not queued/in_progress
 			SELECT t.id, t.chain_id
 			INTO v_task_id, v_chain_id
 			FROM public.tasks t
 			JOIN public.chains c ON t.chain_id = c.id
 			WHERE t.channel_id = p_channel_id
 			AND t.status = 'queued'
-			AND c.status = 'in_progress'
-			AND NOT EXISTS (SELECT 1 FROM public.tasks WHERE chain_id = t.chain_id AND sequence < t.sequence AND status != 'done')
+			AND c.status != 'locked'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM public.tasks
+				WHERE chain_id = t.chain_id
+				  AND sequence < t.sequence
+				  AND status IN ('queued', 'in_progress')
+			)
 			ORDER BY c.created_at ASC, t.sequence ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1;
@@ -480,7 +486,7 @@ func TestPostgresStore_FailChainTaskUpdatesChainStatus(t *testing.T) {
 
 	task1, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 1, Title: "Fail Task 1 PG"})
 	assert.NoError(t, err)
-	_, err = s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Fail Task 2 PG"})
+	task2, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Fail Task 2 PG"})
 	assert.NoError(t, err)
 
 	// Claim task 1
@@ -497,9 +503,11 @@ func TestPostgresStore_FailChainTaskUpdatesChainStatus(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, model.ChainStatusFailed, updatedChain.Status)
 
-	// Try to claim task 2 (should not be claimable as chain is failed)
-	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
-	assert.ErrorIs(t, err, store.ErrNoQueuedTasks) // Expect no more queued tasks for this chain
+	// Task 2 should still be claimable because predecessor(1) is terminal(failed)
+	claimed2, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	assert.Equal(t, task2.ID, claimed2.ID)
+	assert.Equal(t, model.TaskStatusInProgress, claimed2.Status)
 }
 
 func TestPostgresStore_DetachAgentFromChain(t *testing.T) {
@@ -558,6 +566,67 @@ func TestPostgresStore_DetachAgentFromChain(t *testing.T) {
 	assert.Equal(t, task1.ID, lockedTask.ID)
 
 	// Verify agent's current_task_id is cleared
+	ag, err := s.GetAgent(ctx, agent.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", ag.CurrentTaskID)
+}
+
+func TestPostgresStore_DetachAgentFromChain_NoInProgressTaskKeepsChainStatus(t *testing.T) {
+	s, teardown := setupTestDB(t)
+	defer teardown()
+	ctx := context.Background()
+
+	ch, err := s.CreateChannel(ctx, model.Channel{Name: "detach-no-progress-channel-pg"})
+	assert.NoError(t, err)
+
+	agent := model.Agent{ID: "c3d4e5f6-a7b8-9012-cdef-234567890123", Name: "Detach No Progress Agent PG"}
+	_, err = s.UpsertAgent(ctx, agent)
+	assert.NoError(t, err)
+
+	chain, err := s.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "detach-no-progress-chain-pg",
+		Status:    model.ChainStatusQueued,
+	})
+	assert.NoError(t, err)
+
+	task1, err := s.CreateTask(ctx, model.Task{
+		ChannelID: ch.ID,
+		ChainID:   chain.ID,
+		Sequence:  1,
+		Title:     "Detach No Progress Task 1 PG",
+	})
+	assert.NoError(t, err)
+
+	claimed, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	assert.Equal(t, task1.ID, claimed.ID)
+
+	_, err = s.CompleteTask(ctx, store.CompleteTaskRequest{TaskID: task1.ID, AgentID: agent.ID})
+	assert.NoError(t, err)
+
+	chainBeforeDetach, err := s.GetChain(ctx, chain.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, model.ChainStatusDone, chainBeforeDetach.Status)
+	assert.Equal(t, agent.ID, chainBeforeDetach.OwnerAgentID)
+
+	err = s.DetachAgentFromChain(ctx, store.DetachAgentFromChainRequest{
+		ChainID: chain.ID,
+		AgentID: agent.ID,
+	})
+	assert.NoError(t, err)
+
+	chainAfterDetach, err := s.GetChain(ctx, chain.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", chainAfterDetach.OwnerAgentID)
+	assert.Equal(t, model.ChainStatusDone, chainAfterDetach.Status)
+
+	tasksAfterDetach, err := s.ListTasks(ctx, store.TaskFilter{ChainID: chain.ID})
+	assert.NoError(t, err)
+	assert.Len(t, tasksAfterDetach, 1)
+	assert.Equal(t, task1.ID, tasksAfterDetach[0].ID)
+	assert.Equal(t, model.TaskStatusDone, tasksAfterDetach[0].Status)
+
 	ag, err := s.GetAgent(ctx, agent.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "", ag.CurrentTaskID)

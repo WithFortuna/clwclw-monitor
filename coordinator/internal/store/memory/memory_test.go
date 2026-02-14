@@ -404,7 +404,7 @@ func TestFailChainTaskUpdatesChainStatus(t *testing.T) {
 
 	task1, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 1, Title: "Fail Task 1"})
 	assert.NoError(t, err)
-	_, err = s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Fail Task 2"})
+	task2, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Fail Task 2"})
 	assert.NoError(t, err)
 
 	// Claim task 1
@@ -416,14 +416,16 @@ func TestFailChainTaskUpdatesChainStatus(t *testing.T) {
 	_, err = s.FailTask(ctx, store.FailTaskRequest{TaskID: task1.ID, AgentID: agent.ID, Reason: "simulated failure"})
 	assert.NoError(t, err)
 
-	// Chain should now be Failed (any task failure immediately halts the chain)
+	// Chain should now be Failed
 	updatedChain, err := s.GetChain(ctx, chain.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, model.ChainStatusFailed, updatedChain.Status)
 
-	// Try to claim task 2 (should not be claimable as chain is failed)
-	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
-	assert.ErrorIs(t, err, store.ErrNoQueuedTasks)
+	// Task 2 should still be claimable because predecessor(1) is terminal(failed)
+	claimed2, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	assert.Equal(t, task2.ID, claimed2.ID)
+	assert.Equal(t, model.TaskStatusInProgress, claimed2.Status)
 }
 
 func TestChainOwnership(t *testing.T) {
@@ -612,6 +614,66 @@ func TestDetachAgentFromChain(t *testing.T) {
 		AgentID: "some-other-agent",
 	})
 	assert.ErrorIs(t, err, store.ErrConflict)
+}
+
+func TestDetachAgentFromChain_NoInProgressTaskKeepsChainStatus(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	ch, err := s.CreateChannel(ctx, model.Channel{Name: "detach-no-progress-channel"})
+	assert.NoError(t, err)
+
+	agent := model.Agent{ID: "agent-detach-no-progress", Name: "Detach No Progress Agent"}
+	_, err = s.UpsertAgent(ctx, agent)
+	assert.NoError(t, err)
+
+	chain, err := s.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "detach-no-progress-chain",
+		Status:    model.ChainStatusQueued,
+	})
+	assert.NoError(t, err)
+
+	task1, err := s.CreateTask(ctx, model.Task{
+		ChannelID: ch.ID,
+		ChainID:   chain.ID,
+		Sequence:  1,
+		Title:     "Detach No Progress Task 1",
+	})
+	assert.NoError(t, err)
+
+	claimed, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	assert.Equal(t, task1.ID, claimed.ID)
+
+	_, err = s.CompleteTask(ctx, store.CompleteTaskRequest{TaskID: task1.ID, AgentID: agent.ID})
+	assert.NoError(t, err)
+
+	chainBeforeDetach, err := s.GetChain(ctx, chain.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, model.ChainStatusDone, chainBeforeDetach.Status)
+	assert.Equal(t, agent.ID, chainBeforeDetach.OwnerAgentID)
+
+	err = s.DetachAgentFromChain(ctx, store.DetachAgentFromChainRequest{
+		ChainID: chain.ID,
+		AgentID: agent.ID,
+	})
+	assert.NoError(t, err)
+
+	chainAfterDetach, err := s.GetChain(ctx, chain.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", chainAfterDetach.OwnerAgentID)
+	assert.Equal(t, model.ChainStatusDone, chainAfterDetach.Status)
+
+	tasksAfterDetach, err := s.ListTasks(ctx, store.TaskFilter{ChainID: chain.ID})
+	assert.NoError(t, err)
+	assert.Len(t, tasksAfterDetach, 1)
+	assert.Equal(t, task1.ID, tasksAfterDetach[0].ID)
+	assert.Equal(t, model.TaskStatusDone, tasksAfterDetach[0].Status)
+
+	ag, err := s.GetAgent(ctx, agent.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", ag.CurrentTaskID)
 }
 
 func TestUpdateTaskStatus(t *testing.T) {
