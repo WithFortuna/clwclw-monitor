@@ -77,6 +77,10 @@
   - Locked Task는 In Progress 컬럼에 시각적으로 구분되어 표시 (dashed border, amber 색상)
   - Locked Task에 "→ Queued" / "→ Done" 버튼으로 상태 전환
   - Agent 미할당 또는 locked 상태의 Chain에 Agent 할당 드롭다운 제공
+- **체인 수동 할당 구독 검증**:
+  - `POST /v1/chains/{id}/assign-agent` 호출 시 대상 Agent가 해당 Chain의 채널을 `subscriptions`에 포함하고 있는지 서버에서 검증해야 한다.
+  - 미구독 상태면 서버는 명시적 오류 코드를 반환해야 한다(프론트 분기 가능).
+  - 대시보드는 이 오류를 받으면 사용자에게 채널 구독 추가 여부를 확인하고, 승인 시 `PATCH /v1/agents/{id}/channels`로 채널을 추가한 뒤 할당을 재시도해야 한다.
 - **API 엔드포인트**:
   - `POST /v1/chains/{id}/detach` — Agent를 Chain에서 분리
   - `POST /v1/tasks/{id}/status` — Locked Task 상태 전환 (locked→queued 또는 locked→done만 허용)
