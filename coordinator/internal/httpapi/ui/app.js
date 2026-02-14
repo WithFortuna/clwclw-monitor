@@ -150,8 +150,8 @@ function deriveWorkerStatus(lastSeen) {
   return age < threshold ? 'online' : 'offline';
 }
 
-function workerStatusBadge(lastSeen) {
-  const status = deriveWorkerStatus(lastSeen);
+function workerStatusBadge(workerStatus, lastSeen) {
+  const status = workerStatus || deriveWorkerStatus(lastSeen);
   const cls = status === 'online' ? 'badge ok' : 'badge err';
   return `<span class="${cls}">${status}</span>`;
 }
@@ -320,7 +320,9 @@ function renderAgents(agents) {
       // Display tmux info: prefer tmux_display (dynamically resolved #S:#I.#P from pane_id)
       const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
-      const claudeStatus = a.claude_status || a.status || 'idle';
+      const claudeStatus = workerStatus === 'offline'
+        ? 'not running'
+        : (a.claude_status || a.status || 'idle');
       const agentState = a?.meta?.state || '';
       const isSetupWaiting = agentState === 'setup_waiting' && !tmux;
       const hasSubs = Array.isArray(a?.meta?.subscriptions) && a.meta.subscriptions.length > 0;
@@ -343,7 +345,7 @@ function renderAgents(agents) {
 
       return `<tr>
         <td>${escapeHtml(name)}</td>
-        <td>${workerStatusBadge(a.last_seen)}</td>
+        <td>${workerStatusBadge(workerStatus, a.last_seen)}</td>
         <td>${claudeStatusBadge(claudeStatus)}</td>
         <td class="muted subs-cell" data-agent-id="${escapeHtml(a.id)}" data-subs="${escapeHtml(subs)}" title="Click to edit"
             style="cursor:pointer;">${escapeHtml(subs) || '<span class="muted" style="opacity:0.5">click to assign</span>'}</td>
