@@ -11,6 +11,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestListAgents_SortedByNameAscending(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+
+	_, err := s.UpsertAgent(ctx, model.Agent{ID: "agent-zeta", Name: "zeta"})
+	assert.NoError(t, err)
+	_, err = s.UpsertAgent(ctx, model.Agent{ID: "agent-beta", Name: "beta"})
+	assert.NoError(t, err)
+	_, err = s.UpsertAgent(ctx, model.Agent{ID: "agent-alpha", Name: "alpha"})
+	assert.NoError(t, err)
+
+	agents, err := s.ListAgents(ctx, "")
+	assert.NoError(t, err)
+	assert.Len(t, agents, 3)
+	assert.Equal(t, "alpha", agents[0].Name)
+	assert.Equal(t, "beta", agents[1].Name)
+	assert.Equal(t, "zeta", agents[2].Name)
+}
+
 func TestCreateChain(t *testing.T) {
 	s := NewStore()
 	ctx := context.Background()
