@@ -25,3 +25,4 @@
 - `0021-interactive-prompts.md` — **Done** — 인터랙티브 선택지 감지 → 대시보드 표시 → 사용자 선택/주입
 - `0022-interactive-prompt-navigation.md` — **Done** — Enter/Tab/Arrow/Esc 기반 선택지 UI 감지 + 키 주입(옵션 선택)
 - `0054-enforce-chain-assign-subscription-check.md` — **Done** — 체인 수동 할당 시 채널 구독 검증 + UI 구독 추가 확인/재시도
+- `0055-fix-subscription-dropdown-edit-refresh-race.md` — **Done** — Agent subscription 드롭다운 편집 중 auto refresh 리렌더 경합 수정
