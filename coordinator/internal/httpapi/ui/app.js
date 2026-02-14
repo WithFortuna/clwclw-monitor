@@ -267,7 +267,7 @@ async function createChainFromPopover(channelId, rawName) {
   if (created?.chain?.id) {
     expandedChainIds.add(created.chain.id);
   }
-  await refresh();
+  await refresh({ forceTaskBoardRender: true });
 }
 
 function focusQueuedTaskCreateInput(channelId, chainId) {
@@ -298,7 +298,14 @@ async function createTaskFromQueuedPopover(channelId, chainId, rawTitle) {
 
   queuedTaskDraftTitlesByChainId.delete(chainId);
   openQueuedTaskCreateKey = '';
-  await refresh();
+  await refresh({ forceTaskBoardRender: true });
+}
+
+function shouldSkipTaskBoardRender(options = {}) {
+  if (options.forceTaskBoardRender) return false;
+  const active = document.activeElement;
+  if (!active) return false;
+  return !!active.closest?.('.chain-create-input, .queued-task-create-input');
 }
 
 function renderAgents(agents) {
@@ -744,7 +751,7 @@ async function sendPromptKeys(keys, opts = {}) {
   await sendTaskInput('keys', text, false, opts);
 }
 
-async function refresh() {
+async function refresh(options = {}) {
   const dash = await api('/v1/dashboard');
   const agents = dash.agents || [];
   const channels = dash.channels || [];
@@ -767,7 +774,9 @@ async function refresh() {
   fillChannelSelect(els.taskChannel, channels);
   fillChannelSelect(els.claimChannel, channels);
   fillChainSelect(els.taskChain, chains, els.taskChannel.value);
-  renderTaskBoard(channels, chains, tasks, agents);
+  if (!shouldSkipTaskBoardRender(options)) {
+    renderTaskBoard(channels, chains, tasks, agents);
+  }
   renderEvents(events);
 }
 
