@@ -2245,8 +2245,26 @@ async function startWorkLoop(channels, initialTarget) {
         agentdSocket.on('error', () => { agentdSocket = null; });
       }
 
-      // Complete the session request task
-      await completeTask(sessionTask.id);
+      // Complete the session request task via a dedicated token event.
+      const sessionRequestToken = String(
+        sessionTask.agent_session_request_token || sessionTask.agentSessionRequestToken || ''
+      ).trim();
+      if (sessionRequestToken) {
+        await emitEvent(
+          'agent.automation.session_request.completed',
+          {
+            task_id: sessionTask.id,
+            pane_id: tmuxPaneId,
+            session_name: sessionName,
+            agent_session_request_token: sessionRequestToken,
+            ts: new Date().toISOString(),
+          },
+          `agent.automation.session_request.completed:${sessionRequestToken}`
+        );
+      } else {
+        // Backward compatibility: older servers/tasks without token.
+        await completeTask(sessionTask.id);
+      }
       console.log(`[agent] request_claude_session completed, transitioning to STATE 2`);
 
       await sleep(pollSec * 1000);

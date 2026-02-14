@@ -101,12 +101,6 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 			}
 		}
 
-		// If no API token configured, auth requires JWT only (checked above).
-		if apiToken == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
-			return
-		}
-
 		// --- Query param tokens (for SSE/EventSource which can't set headers) ---
 		if r.Method == http.MethodGet {
 			// Try JWT via query param
