@@ -319,3 +319,95 @@ func TestHandleEvents_SessionRequestCompletedByToken(t *testing.T) {
 		t.Fatalf("expected session request task to be done after completion event")
 	}
 }
+
+func TestHandleChainAssignAgent_RejectsWhenAgentNotSubscribed(t *testing.T) {
+	server := newTestServer(t)
+	ctx := context.Background()
+
+	ch, err := server.store.CreateChannel(ctx, model.Channel{Name: "backend-domain"})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	chain, err := server.store.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "chain-a",
+		Status:    model.ChainStatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("create chain: %v", err)
+	}
+	_, err = server.store.UpsertAgent(ctx, model.Agent{
+		ID:   "11111111-1111-4111-8111-111111111111",
+		Name: "agent-a",
+		Meta: map[string]any{
+			"subscriptions": []string{"other-channel"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"agent_id": "11111111-1111-4111-8111-111111111111"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chains/"+chain.ID+"/assign-agent", bytes.NewReader(body))
+	req.SetPathValue("id", chain.ID)
+	server.handleChainAssignAgent(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+
+	var resp errorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if resp.Error.Code != "agent_not_subscribed_channel" {
+		t.Fatalf("expected error code agent_not_subscribed_channel, got %q", resp.Error.Code)
+	}
+}
+
+func TestHandleChainAssignAgent_AllowsWhenAgentSubscribed(t *testing.T) {
+	server := newTestServer(t)
+	ctx := context.Background()
+
+	ch, err := server.store.CreateChannel(ctx, model.Channel{Name: "backend-domain"})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	chain, err := server.store.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "chain-b",
+		Status:    model.ChainStatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("create chain: %v", err)
+	}
+	_, err = server.store.UpsertAgent(ctx, model.Agent{
+		ID:   "22222222-2222-4222-8222-222222222222",
+		Name: "agent-b",
+		Meta: map[string]any{
+			"subscriptions": []string{"backend-domain"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"agent_id": "22222222-2222-4222-8222-222222222222"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chains/"+chain.ID+"/assign-agent", bytes.NewReader(body))
+	req.SetPathValue("id", chain.ID)
+	server.handleChainAssignAgent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, err := server.store.GetChain(ctx, chain.ID)
+	if err != nil {
+		t.Fatalf("get chain: %v", err)
+	}
+	if updated.OwnerAgentID != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("expected owner to be assigned, got %q", updated.OwnerAgentID)
+	}
+}

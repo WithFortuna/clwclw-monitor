@@ -80,8 +80,19 @@ async function api(path, options = {}) {
     return;
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${text}`);
+    let payload = null;
+    let text = '';
+    try {
+      payload = await res.json();
+    } catch {
+      text = await res.text().catch(() => '');
+    }
+    const msg = payload?.error?.message || text || `request failed (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = payload?.error?.code || '';
+    err.payload = payload;
+    throw err;
   }
   return res.json();
 }
@@ -173,6 +184,11 @@ function escapeHtml(str) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function normalizeSubs(subs) {
+  if (!Array.isArray(subs)) return [];
+  return subs.map((s) => String(s || '').trim()).filter(Boolean);
 }
 
 function renderAgents(agents) {
@@ -285,7 +301,7 @@ function renderTaskBoard(channels, chains, tasks, agents) {
         const opts = onlineAgents.map(a =>
           `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`
         ).join('');
-        assignDropdown = `<select class="agent-assign-dropdown" data-chain-id="${escapeHtml(ch.id)}">
+        assignDropdown = `<select class="agent-assign-dropdown" data-chain-id="${escapeHtml(ch.id)}" data-channel-name="${escapeHtml(channel.name)}">
           <option value="">Assign agent…</option>${opts}
         </select>`;
       }
@@ -812,6 +828,7 @@ async function main() {
     const dropdown = ev.target?.closest?.('.agent-assign-dropdown');
     if (!dropdown) return;
     const chainId = dropdown.getAttribute('data-chain-id');
+    const channelName = (dropdown.getAttribute('data-channel-name') || '').trim();
     const agentId = dropdown.value;
     if (!chainId || !agentId) return;
     try {
@@ -821,6 +838,36 @@ async function main() {
       });
       await refresh();
     } catch (err) {
+      if (err?.code === 'agent_not_subscribed_channel' && channelName) {
+        const shouldSubscribe = window.confirm(
+          `이 에이전트는 '${channelName}' 채널을 구독하지 않습니다.\n지금 구독에 추가하고 체인 할당을 다시 시도할까요?`,
+        );
+        if (!shouldSubscribe) {
+          dropdown.value = '';
+          return;
+        }
+
+        const agent = lastAgentsById.get(agentId);
+        const currentSubs = normalizeSubs(agent?.meta?.subscriptions);
+        const exists = currentSubs.some((s) => s.toLowerCase() === channelName.toLowerCase());
+        const nextSubs = exists ? currentSubs : [...currentSubs, channelName];
+
+        try {
+          await api(`/v1/agents/${encodeURIComponent(agentId)}/channels`, {
+            method: 'PATCH',
+            body: JSON.stringify({ subscriptions: nextSubs }),
+          });
+          await api(`/v1/chains/${encodeURIComponent(chainId)}/assign-agent`, {
+            method: 'POST',
+            body: JSON.stringify({ agent_id: agentId }),
+          });
+          await refresh();
+          return;
+        } catch (retryErr) {
+          showError(retryErr);
+          return;
+        }
+      }
       showError(err);
     }
   });
@@ -912,16 +959,15 @@ async function main() {
     const agentId = cell.getAttribute('data-agent-id');
     const currentSubs = cell.getAttribute('data-subs') || '';
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = currentSubs;
-    input.placeholder = 'channel1, channel2';
-    input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;background:#1a1a2e;color:#e0e0e0;border:1px solid #6ee7b7;border-radius:3px;';
-
-    cell.textContent = '';
-    cell.appendChild(input);
-    input.focus();
-    input.select();
+    const currentList = currentSubs
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const current = currentList[0] || '';
+    const channelNames = (lastChannels || [])
+      .map((c) => String(c?.name || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
 
     let finished = false;
 
@@ -936,15 +982,41 @@ async function main() {
       cell.innerHTML = `${valueHtml}${stateHtml}`;
     };
 
+    if (!channelNames.length) {
+      renderCellValue(currentSubs, 'no channels to select');
+      return;
+    }
+
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;background:#1a1a2e;color:#e0e0e0;border:1px solid #6ee7b7;border-radius:3px;';
+
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '(none)';
+    if (!current) emptyOpt.selected = true;
+    select.appendChild(emptyOpt);
+
+    channelNames.forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === current) opt.selected = true;
+      select.appendChild(opt);
+    });
+
+    cell.textContent = '';
+    cell.appendChild(select);
+    select.focus();
+
     const save = async () => {
       if (finished) return;
       finished = true;
-      input.removeEventListener('keydown', onKeyDown);
-      input.removeEventListener('blur', onBlur);
-      if (document.activeElement === input) input.blur();
+      select.removeEventListener('keydown', onKeyDown);
+      select.removeEventListener('change', onChange);
+      if (document.activeElement === select) select.blur();
 
-      const val = input.value.trim();
-      const subs = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const selected = String(select.value || '').trim();
+      const subs = selected ? [selected] : [];
       const nextSubs = subs.join(', ');
       renderCellValue(nextSubs, 'saving...');
 
@@ -966,29 +1038,25 @@ async function main() {
     const cancel = () => {
       if (finished) return;
       finished = true;
-      input.removeEventListener('keydown', onKeyDown);
-      input.removeEventListener('blur', onBlur);
-      if (document.activeElement === input) input.blur();
+      select.removeEventListener('keydown', onKeyDown);
+      select.removeEventListener('change', onChange);
+      if (document.activeElement === select) select.blur();
       renderCellValue(currentSubs, 'cancelled');
       refresh().catch(() => {});
     };
 
     const onKeyDown = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        save().catch(() => {});
-      }
       if (e.key === 'Escape') {
         e.preventDefault();
         cancel();
       }
     };
-    const onBlur = () => {
+    const onChange = () => {
       save().catch(() => {});
     };
 
-    input.addEventListener('keydown', onKeyDown);
-    input.addEventListener('blur', onBlur);
+    select.addEventListener('keydown', onKeyDown);
+    select.addEventListener('change', onChange);
   });
 
   els.taskChannel.addEventListener('change', () => {

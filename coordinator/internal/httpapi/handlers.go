@@ -1242,6 +1242,58 @@ type chainAssignAgentRequest struct {
 	AgentID string `json:"agent_id"`
 }
 
+func normalizeSubscriptions(raw any) []string {
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func hasChannelSubscription(agent *model.Agent, channelName string) bool {
+	if agent == nil {
+		return false
+	}
+	channelName = strings.TrimSpace(channelName)
+	if channelName == "" || agent.Meta == nil {
+		return false
+	}
+	subs := normalizeSubscriptions(agent.Meta["subscriptions"])
+	for _, s := range subs {
+		if strings.EqualFold(s, channelName) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -1276,6 +1328,40 @@ func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get chain")
+		return
+	}
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	channels, err := s.store.ListChannels(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
+		return
+	}
+
+	channelName := ""
+	for _, ch := range channels {
+		if ch.ID == existing.ChannelID {
+			channelName = ch.Name
+			break
+		}
+	}
+	if channelName == "" {
+		writeError(w, http.StatusNotFound, "not_found", "chain channel not found")
+		return
+	}
+
+	if !hasChannelSubscription(agent, channelName) {
+		writeError(w, http.StatusConflict, "agent_not_subscribed_channel",
+			fmt.Sprintf("agent '%s' is not subscribed to channel '%s'", agentID, channelName))
 		return
 	}
 
