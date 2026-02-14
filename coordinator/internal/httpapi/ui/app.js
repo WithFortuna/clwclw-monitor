@@ -51,6 +51,11 @@ let lastPromptByTaskId = new Map();
 let lastChannels = [];
 let lastChains = [];
 let lastAgents = [];
+let expandedChainIds = new Set();
+let openChainCreateChannelId = '';
+let chainDraftNamesByChannelId = new Map();
+let openQueuedTaskCreateKey = '';
+let queuedTaskDraftTitlesByChainId = new Map();
 let promptModalState = { taskId: '', agentId: '', event: null };
 
 // --- Notification State ---
@@ -191,10 +196,115 @@ function normalizeSubs(subs) {
   return subs.map((s) => String(s || '').trim()).filter(Boolean);
 }
 
+function taskBoardSnapshotFromCache() {
+  return {
+    channels: lastChannels,
+    chains: lastChains,
+    tasks: Array.from(lastTasksById.values()),
+    agents: lastAgents,
+  };
+}
+
+function makeChannelChainKey(channelId, chainId) {
+  return `${channelId || ''}:${chainId || ''}`;
+}
+
+function rerenderTaskBoardFromCache() {
+  const snap = taskBoardSnapshotFromCache();
+  renderTaskBoard(snap.channels, snap.chains, snap.tasks, snap.agents);
+}
+
+function syncTaskBoardUiState(channels, chains) {
+  const channelIds = new Set((channels || []).map((c) => c.id));
+  const chainIds = new Set((chains || []).map((c) => c.id));
+
+  expandedChainIds = new Set(Array.from(expandedChainIds).filter((id) => chainIds.has(id)));
+
+  if (openChainCreateChannelId && !channelIds.has(openChainCreateChannelId)) {
+    openChainCreateChannelId = '';
+  }
+
+  for (const cid of Array.from(chainDraftNamesByChannelId.keys())) {
+    if (!channelIds.has(cid)) {
+      chainDraftNamesByChannelId.delete(cid);
+    }
+  }
+
+  if (openQueuedTaskCreateKey) {
+    const [channelID, chainID] = openQueuedTaskCreateKey.split(':');
+    if (!channelIds.has(channelID) || !chainIds.has(chainID)) {
+      openQueuedTaskCreateKey = '';
+    }
+  }
+
+  for (const cid of Array.from(queuedTaskDraftTitlesByChainId.keys())) {
+    if (!chainIds.has(cid)) {
+      queuedTaskDraftTitlesByChainId.delete(cid);
+    }
+  }
+}
+
+function focusChainCreateInput(channelId) {
+  if (!channelId) return;
+  const input = Array.from(els.taskBoard.querySelectorAll('.chain-create-input'))
+    .find((el) => el.getAttribute('data-channel-id') === channelId);
+  if (!input) return;
+  input.focus();
+  input.select();
+}
+
+async function createChainFromPopover(channelId, rawName) {
+  const name = String(rawName || '').trim();
+  if (!channelId || !name) return;
+
+  const created = await api('/v1/chains', {
+    method: 'POST',
+    body: JSON.stringify({ channel_id: channelId, name }),
+  });
+
+  chainDraftNamesByChannelId.delete(channelId);
+  openChainCreateChannelId = '';
+  if (created?.chain?.id) {
+    expandedChainIds.add(created.chain.id);
+  }
+  await refresh();
+}
+
+function focusQueuedTaskCreateInput(channelId, chainId) {
+  if (!channelId || !chainId) return;
+  const key = makeChannelChainKey(channelId, chainId);
+  const input = Array.from(els.taskBoard.querySelectorAll('.queued-task-create-input'))
+    .find((el) => el.getAttribute('data-key') === key);
+  if (!input) return;
+  input.focus();
+  input.select();
+}
+
+async function createTaskFromQueuedPopover(channelId, chainId, rawTitle) {
+  const title = String(rawTitle || '').trim();
+  if (!channelId || !chainId || !title) return;
+
+  await api('/v1/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      channel_id: channelId,
+      chain_id: chainId,
+      title,
+      description: '',
+      status: 'queued',
+      priority: 0,
+    }),
+  });
+
+  queuedTaskDraftTitlesByChainId.delete(chainId);
+  openQueuedTaskCreateKey = '';
+  await refresh();
+}
+
 function renderAgents(agents) {
-  // 인라인 편집 input이 실제 포커스 상태일 때만 리렌더링 스킵
-  const activeSubsInput = els.agentsTbody.querySelector('.subs-cell input');
-  if (activeSubsInput && document.activeElement === activeSubsInput) return;
+  // Subscription 편집(select/input) 중에는 리렌더링을 건너뛰어 편집 UI가 끊기지 않게 유지
+  const activeSubsEditor = els.agentsTbody.querySelector('.subs-cell select, .subs-cell input');
+  if (activeSubsEditor && document.activeElement === activeSubsEditor) return;
 
   els.agentsCount.textContent = String(agents.length);
 
@@ -271,14 +381,14 @@ function renderTaskBoard(channels, chains, tasks, agents) {
 
   for (const channel of channels) {
     const channelChains = chainsByChannel.get(channel.id) || [];
-    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0);
+    const isCreateOpen = openChainCreateChannelId === channel.id;
+    const draftChainName = chainDraftNamesByChannelId.get(channel.id) || '';
 
     let inner = '';
 
     // Render each chain within this channel (all tasks belong to a chain)
     for (const ch of channelChains) {
       const list = tasksByChain.get(ch.id) || [];
-      if (!list.length) continue;
       const queued = list.filter((t) => t.status === 'queued').sort((a, b) => a.sequence - b.sequence);
       const locked = list.filter((t) => t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
       const prog = list.filter((t) => t.status === 'in_progress' || t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
@@ -316,15 +426,18 @@ function renderTaskBoard(channels, chains, tasks, agents) {
       }
 
       const chainClass = isLocked ? 'chain-group chain-locked' : 'chain-group';
+      const isExpanded = expandedChainIds.has(ch.id);
+      const toggleLabel = isExpanded ? 'Collapse' : 'Expand';
+      const boardClass = isExpanded ? 'board' : 'board chain-board-collapsed';
 
       inner += `
         <div class="${chainClass}">
           <div class="chain-title">
             <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)} ${ownerHtml}</div>
-            <div style="display:flex;align-items:center;gap:8px;">${assignDropdown}<span class="pill">${list.length} tasks</span></div>
+            <div style="display:flex;align-items:center;gap:8px;">${assignDropdown}<span class="pill">${list.length} tasks</span><button class="btn chain-toggle-btn" data-action="toggle-chain-board" data-chain-id="${escapeHtml(ch.id)}">${toggleLabel}</button></div>
           </div>
-          <div class="board">
-            ${renderTaskCol('Queued', queued, { variant: 'queued' })}
+          <div class="${boardClass}">
+            ${renderTaskCol('Queued', queued, { variant: 'queued', channelId: channel.id, chainId: ch.id })}
             ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
             ${renderTaskCol('Done', done, { variant: 'done' })}
             ${renderTaskCol('Failed', failed, { variant: 'failed' })}
@@ -334,14 +447,26 @@ function renderTaskBoard(channels, chains, tasks, agents) {
     }
 
     if (!inner) {
-      inner = `<div class="muted" style="padding:8px;">No tasks in this channel.</div>`;
+      inner = `<div class="muted" style="padding:8px;">No chains in this channel.</div>`;
     }
 
     output.push(`
       <div class="channel-group">
-        <div class="col-title">
-          <div>Channel: ${escapeHtml(channel.name)}</div>
-          <span class="pill">${totalTasks} tasks</span>
+        <div class="channel-header">
+          <div class="channel-label">Channel: ${escapeHtml(channel.name)}</div>
+          <div class="channel-actions">
+            <span class="pill">${channelChains.length} chains</span>
+            <div class="chain-create-wrap">
+              <button class="btn chain-create-btn" data-action="toggle-chain-popover" data-channel-id="${escapeHtml(channel.id)}">New Chain</button>
+              <div class="chain-create-popover${isCreateOpen ? '' : ' hidden'}">
+                <input class="chain-create-input" data-channel-id="${escapeHtml(channel.id)}" placeholder="체인 이름" value="${escapeHtml(draftChainName)}" />
+                <div class="chain-create-popover-actions">
+                  <button class="btn primary chain-create-confirm" data-action="create-chain" data-channel-id="${escapeHtml(channel.id)}">생성</button>
+                  <button class="btn chain-create-cancel" data-action="cancel-chain-popover" data-channel-id="${escapeHtml(channel.id)}">취소</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         ${inner}
       </div>
@@ -353,6 +478,13 @@ function renderTaskBoard(channels, chains, tasks, agents) {
 
 function renderTaskCol(title, tasks, opts = {}) {
   const variant = opts.variant || '';
+  const channelId = opts.channelId || '';
+  const chainId = opts.chainId || '';
+  const key = makeChannelChainKey(channelId, chainId);
+  const isQueuedCol = variant === 'queued' && !!channelId && !!chainId;
+  const isTaskCreateOpen = isQueuedCol && openQueuedTaskCreateKey === key;
+  const draftTaskTitle = isQueuedCol ? (queuedTaskDraftTitlesByChainId.get(chainId) || '') : '';
+
   const items = tasks
     .map(
       (t) => {
@@ -400,7 +532,21 @@ function renderTaskCol(title, tasks, opts = {}) {
     <div class="col col-${variant}">
       <div class="col-title">
         <div>${escapeHtml(title)}</div>
-        <span class="pill">${tasks.length}</span>
+        <div class="col-title-actions">
+          ${isQueuedCol
+            ? `<div class="queued-task-create-wrap">
+                <button class="btn queued-task-create-btn" data-action="toggle-queued-task-popover" data-channel-id="${escapeHtml(channelId)}" data-chain-id="${escapeHtml(chainId)}">+</button>
+                <div class="queued-task-create-popover${isTaskCreateOpen ? '' : ' hidden'}">
+                  <input class="queued-task-create-input" data-key="${escapeHtml(key)}" data-channel-id="${escapeHtml(channelId)}" data-chain-id="${escapeHtml(chainId)}" placeholder="task title" value="${escapeHtml(draftTaskTitle)}" />
+                  <div class="queued-task-create-actions">
+                    <button class="btn primary" data-action="create-queued-task" data-channel-id="${escapeHtml(channelId)}" data-chain-id="${escapeHtml(chainId)}">생성</button>
+                    <button class="btn" data-action="cancel-queued-task-popover" data-channel-id="${escapeHtml(channelId)}" data-chain-id="${escapeHtml(chainId)}">취소</button>
+                  </div>
+                </div>
+              </div>`
+            : ''}
+          <span class="pill">${tasks.length}</span>
+        </div>
       </div>
       ${items || `<div class="muted">Empty</div>`}
     </div>
@@ -612,6 +758,7 @@ async function refresh() {
   lastChannels = channels;
   lastChains = chains;
   lastAgents = agents;
+  syncTaskBoardUiState(channels, chains);
 
   els.lastRefresh.textContent = fmtTime(new Date().toISOString());
   renderAgents(agents);
@@ -780,6 +927,80 @@ async function main() {
     const task_id = btn.getAttribute('data-task-id');
 
     try {
+      if (action === 'toggle-chain-board') {
+        const chainId = btn.getAttribute('data-chain-id');
+        if (!chainId) return;
+        if (expandedChainIds.has(chainId)) {
+          expandedChainIds.delete(chainId);
+        } else {
+          expandedChainIds.add(chainId);
+        }
+        rerenderTaskBoardFromCache();
+        return;
+      }
+      if (action === 'toggle-chain-popover') {
+        const channelId = btn.getAttribute('data-channel-id');
+        if (!channelId) return;
+        openChainCreateChannelId = openChainCreateChannelId === channelId ? '' : channelId;
+        rerenderTaskBoardFromCache();
+        if (openChainCreateChannelId) {
+          requestAnimationFrame(() => focusChainCreateInput(channelId));
+        }
+        return;
+      }
+      if (action === 'cancel-chain-popover') {
+        const channelId = btn.getAttribute('data-channel-id');
+        if (channelId) chainDraftNamesByChannelId.delete(channelId);
+        openChainCreateChannelId = '';
+        rerenderTaskBoardFromCache();
+        return;
+      }
+      if (action === 'create-chain') {
+        const channelId = btn.getAttribute('data-channel-id');
+        if (!channelId) return;
+        const wrap = btn.closest('.chain-create-popover');
+        const input = wrap ? wrap.querySelector('.chain-create-input') : null;
+        const chainName = String(input?.value || chainDraftNamesByChannelId.get(channelId) || '').trim();
+        if (!chainName) {
+          if (input) input.focus();
+          return;
+        }
+        await createChainFromPopover(channelId, chainName);
+        return;
+      }
+      if (action === 'toggle-queued-task-popover') {
+        const channelId = btn.getAttribute('data-channel-id');
+        const chainId = btn.getAttribute('data-chain-id');
+        if (!channelId || !chainId) return;
+        const key = makeChannelChainKey(channelId, chainId);
+        openQueuedTaskCreateKey = openQueuedTaskCreateKey === key ? '' : key;
+        rerenderTaskBoardFromCache();
+        if (openQueuedTaskCreateKey) {
+          requestAnimationFrame(() => focusQueuedTaskCreateInput(channelId, chainId));
+        }
+        return;
+      }
+      if (action === 'cancel-queued-task-popover') {
+        const chainId = btn.getAttribute('data-chain-id');
+        if (chainId) queuedTaskDraftTitlesByChainId.delete(chainId);
+        openQueuedTaskCreateKey = '';
+        rerenderTaskBoardFromCache();
+        return;
+      }
+      if (action === 'create-queued-task') {
+        const channelId = btn.getAttribute('data-channel-id');
+        const chainId = btn.getAttribute('data-chain-id');
+        if (!channelId || !chainId) return;
+        const wrap = btn.closest('.queued-task-create-popover');
+        const input = wrap ? wrap.querySelector('.queued-task-create-input') : null;
+        const title = String(input?.value || queuedTaskDraftTitlesByChainId.get(chainId) || '').trim();
+        if (!title) {
+          if (input) input.focus();
+          return;
+        }
+        await createTaskFromQueuedPopover(channelId, chainId, title);
+        return;
+      }
       if (action === 'prompt') {
         openPromptModal(task_id);
         return;
@@ -823,6 +1044,79 @@ async function main() {
     }
   });
 
+  els.taskBoard.addEventListener('input', (ev) => {
+    const chainInput = ev.target?.closest?.('.chain-create-input');
+    if (chainInput) {
+      const channelId = chainInput.getAttribute('data-channel-id');
+      if (!channelId) return;
+      chainDraftNamesByChannelId.set(channelId, chainInput.value || '');
+      return;
+    }
+
+    const taskInput = ev.target?.closest?.('.queued-task-create-input');
+    if (!taskInput) return;
+    const chainId = taskInput.getAttribute('data-chain-id');
+    if (!chainId) return;
+    queuedTaskDraftTitlesByChainId.set(chainId, taskInput.value || '');
+  });
+
+  els.taskBoard.addEventListener('keydown', async (ev) => {
+    const chainInput = ev.target?.closest?.('.chain-create-input');
+    if (chainInput) {
+      const channelId = chainInput.getAttribute('data-channel-id');
+      if (!channelId) return;
+
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        chainDraftNamesByChannelId.delete(channelId);
+        openChainCreateChannelId = '';
+        rerenderTaskBoardFromCache();
+        return;
+      }
+
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const chainName = String(chainInput.value || '').trim();
+      if (!chainName) {
+        chainInput.focus();
+        return;
+      }
+      try {
+        await createChainFromPopover(channelId, chainName);
+      } catch (err) {
+        showError(err);
+      }
+      return;
+    }
+
+    const taskInput = ev.target?.closest?.('.queued-task-create-input');
+    if (!taskInput) return;
+    const channelId = taskInput.getAttribute('data-channel-id');
+    const chainId = taskInput.getAttribute('data-chain-id');
+    if (!channelId || !chainId) return;
+
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      queuedTaskDraftTitlesByChainId.delete(chainId);
+      openQueuedTaskCreateKey = '';
+      rerenderTaskBoardFromCache();
+      return;
+    }
+
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    const title = String(taskInput.value || '').trim();
+    if (!title) {
+      taskInput.focus();
+      return;
+    }
+    try {
+      await createTaskFromQueuedPopover(channelId, chainId, title);
+    } catch (err) {
+      showError(err);
+    }
+  });
+
   // Agent assignment dropdown on chain cards
   els.taskBoard.addEventListener('change', async (ev) => {
     const dropdown = ev.target?.closest?.('.agent-assign-dropdown');
@@ -831,6 +1125,30 @@ async function main() {
     const channelName = (dropdown.getAttribute('data-channel-name') || '').trim();
     const agentId = dropdown.value;
     if (!chainId || !agentId) return;
+
+    // Check if agent already owns another chain
+    const ownedChain = lastChains.find(c => c.owner_agent_id === agentId && c.id !== chainId);
+    if (ownedChain) {
+      const ownedChainName = ownedChain.name || ownedChain.id;
+      const shouldReassign = window.confirm(
+        `이 에이전트는 이미 체인 '${ownedChainName}'에 할당되어 있습니다.\n기존 체인에서 해제하고 새 체인에 할당할까요?`,
+      );
+      if (!shouldReassign) {
+        dropdown.value = '';
+        return;
+      }
+      try {
+        await api(`/v1/chains/${encodeURIComponent(ownedChain.id)}/detach`, {
+          method: 'POST',
+          body: JSON.stringify({ agent_id: agentId }),
+        });
+      } catch (detachErr) {
+        showError(detachErr);
+        dropdown.value = '';
+        return;
+      }
+    }
+
     try {
       await api(`/v1/chains/${encodeURIComponent(chainId)}/assign-agent`, {
         method: 'POST',
@@ -954,7 +1272,7 @@ async function main() {
   els.agentsTbody.addEventListener('click', (ev) => {
     const cell = ev.target?.closest?.('.subs-cell');
     if (!cell) return;
-    if (cell.querySelector('input')) return; // already editing
+    if (cell.querySelector('select, input')) return; // already editing
 
     const agentId = cell.getAttribute('data-agent-id');
     const currentSubs = cell.getAttribute('data-subs') || '';
@@ -1129,6 +1447,21 @@ async function main() {
 
   // Close panel on outside click
   document.addEventListener('click', (e) => {
+    if (openChainCreateChannelId) {
+      const withinCreateUi = e.target?.closest?.('.chain-create-wrap');
+      if (!withinCreateUi) {
+        openChainCreateChannelId = '';
+        rerenderTaskBoardFromCache();
+      }
+    }
+    if (openQueuedTaskCreateKey) {
+      const withinQueuedCreateUi = e.target?.closest?.('.queued-task-create-wrap');
+      if (!withinQueuedCreateUi) {
+        openQueuedTaskCreateKey = '';
+        rerenderTaskBoardFromCache();
+      }
+    }
+
     if (!isNotifPanelOpen) return;
     const panel = document.getElementById('notifPanel');
     if (panel && !panel.contains(e.target) && notifBell && !notifBell.contains(e.target)) {
