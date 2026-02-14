@@ -43,6 +43,11 @@
 - 채널(도메인) 단위로 태스크 발행
 - 채널별 태스크 목록/상태 표시
 - 태스크 상태 최소 단계: `Queued / In Progress / Done`
+- 채널 보드 헤더에는 해당 채널의 **Task 수가 아닌 Chain 수**를 표시해야 한다.
+- 체인 카드는 기본적으로 헤더(체인 이름/상태/할당 정보) 중심으로 표시하고, 체인에 속한 태스크 보드는 접기/펼치기(toggle) 가능해야 한다.
+- `Channel:{name}` 헤더 우측에 `새 체인` 버튼을 두고, 클릭 시 작은 popover에서 체인 이름을 입력해 생성할 수 있어야 한다.
+- 각 체인의 `Queued` 컬럼 헤더 우측에는 `+` 버튼을 두고, 작은 popover에서 Task 제목을 입력해 생성할 수 있어야 한다.
+- `Queued` 컬럼의 popover로 Task 생성 시 `channel_id`와 `chain_id`는 해당 카드 컨텍스트를 자동 사용해야 하며, 사용자가 별도로 입력하지 않아야 한다.
 
 ### 4.4 태스크 분배 모델
 - 분배 방식: **FIFO**
@@ -58,11 +63,13 @@
 - **독점적 접근**: Chain을 소유한 Agent만 해당 Chain의 Task를 claim할 수 있다. 같은 채널을 구독하는 다른 Agent는 소유된 Chain의 Task를 claim할 수 없다
 - **Ownership 해제**: Chain의 모든 Task가 완료되거나 실패하면 소유권이 자동으로 해제된다
 - **Detach 메커니즘**: Agent는 명시적으로 Chain ownership을 해제할 수 있다 (수동 detach)
+- **후속 Task claim 게이트**: Chain에서 다음 Task를 `in_progress`로 올릴 때, 현재 Task보다 선행(sequence가 더 작은) Task들 중 `queued` 또는 `in_progress` 상태가 하나도 없으면 claim 가능하다 (`done`/`failed`는 블로킹하지 않음).
 
 #### 4.4.2 Detach 및 Locked Task 처리
 - **Detach 동작**: Agent를 Chain에서 분리하면 현재 `in_progress` 상태인 Task는 `locked` 상태로 전환된다
   - Chain의 `owner_agent_id`가 초기화된다
-  - Chain 상태가 `locked`로 변경된다
+  - `locked` Task가 존재하면 Chain 상태는 `locked`로 변경된다
+  - `in_progress` Task가 없어 `locked` Task가 생기지 않으면 Chain 상태는 남은 Task 상태(`queued`/`in_progress`/`done`/`failed`)로 재평가된다
   - Agent의 `current_task_id`가 초기화된다
 - **Locked 상태**: Task/Chain이 Agent 분리로 인해 중단된 상태를 나타내는 새로운 상태값
   - Task 상태: `queued` / `in_progress` / `done` / `failed` / **`locked`**

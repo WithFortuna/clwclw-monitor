@@ -691,6 +691,22 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			req.Sequence = 1 // First and only task in this new chain
 		}
 
+		// Auto-calculate next sequence for existing chain when sequence is not provided
+		if req.Sequence <= 0 && strings.TrimSpace(req.ChainID) != "" {
+			chainTasks, listErr := s.store.ListTasks(r.Context(), store.TaskFilter{ChainID: req.ChainID})
+			if listErr != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "failed to list chain tasks")
+				return
+			}
+			maxSeq := 0
+			for _, ct := range chainTasks {
+				if ct.Sequence > maxSeq {
+					maxSeq = ct.Sequence
+				}
+			}
+			req.Sequence = maxSeq + 1
+		}
+
 		t, err := s.store.CreateTask(r.Context(), model.Task{
 			UserID:        userID,
 			ChannelID:     strings.TrimSpace(req.ChannelID),
