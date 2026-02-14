@@ -252,6 +252,10 @@ func (s *Store) UpdateChain(_ context.Context, c model.Chain) (model.Chain, erro
 	if c.Status != "" {
 		existing.Status = c.Status
 	}
+	// Allow updating OwnerAgentID (including setting to empty string to release ownership)
+	if c.OwnerAgentID != existing.OwnerAgentID {
+		existing.OwnerAgentID = c.OwnerAgentID
+	}
 
 	existing.UpdatedAt = time.Now().UTC()
 	s.chains[existing.ID] = existing
@@ -269,6 +273,157 @@ func (s *Store) DeleteChain(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) DetachAgentFromChain(_ context.Context, req store.DetachAgentFromChainRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	chainID := strings.TrimSpace(req.ChainID)
+	agentID := strings.TrimSpace(req.AgentID)
+	if chainID == "" {
+		return errWithCode("chain_id_required")
+	}
+	if agentID == "" {
+		return errWithCode("agent_id_required")
+	}
+
+	chain, ok := s.chains[chainID]
+	if !ok {
+		return store.ErrNotFound
+	}
+
+	// Only the current owner can be detached
+	if chain.OwnerAgentID != agentID {
+		return store.ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	// Find in_progress task in this chain and set it to locked
+	for id, t := range s.tasks {
+		if t.ChainID == chainID && t.Status == model.TaskStatusInProgress {
+			t.Status = model.TaskStatusLocked
+			t.UpdatedAt = now
+			s.tasks[id] = t
+			break
+		}
+	}
+
+	// Clear chain ownership and set chain status to locked
+	chain.OwnerAgentID = ""
+	chain.Status = model.ChainStatusLocked
+	chain.UpdatedAt = now
+	s.chains[chainID] = chain
+
+	// Clear agent's current_task_id
+	if agent, ok := s.agents[agentID]; ok {
+		agent.CurrentTaskID = ""
+		agent.UpdatedAt = now
+		s.agents[agentID] = agent
+	}
+
+	return nil
+}
+
+func (s *Store) UpdateTaskStatus(_ context.Context, taskID string, newStatus model.TaskStatus) (*model.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errWithCode("task_id_required")
+	}
+
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+
+	// Only allow transitions from locked
+	if t.Status != model.TaskStatusLocked {
+		return nil, store.ErrConflict
+	}
+
+	// Only allow locked → queued or locked → done
+	if newStatus != model.TaskStatusQueued && newStatus != model.TaskStatusDone {
+		return nil, store.ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	if newStatus == model.TaskStatusQueued {
+		t.Status = model.TaskStatusQueued
+		t.AssignedAgentID = ""
+		t.ClaimedAt = nil
+		t.UpdatedAt = now
+	} else { // done
+		t.Status = model.TaskStatusDone
+		t.DoneAt = &now
+		t.UpdatedAt = now
+	}
+	s.tasks[taskID] = t
+
+	// Re-evaluate chain status
+	if t.ChainID != "" {
+		s.reevaluateChainStatus(t.ChainID, now)
+	}
+
+	return &t, nil
+}
+
+// reevaluateChainStatus checks chain tasks and updates chain status accordingly.
+// Must be called with s.mu held.
+func (s *Store) reevaluateChainStatus(chainID string, now time.Time) {
+	chain, ok := s.chains[chainID]
+	if !ok {
+		return
+	}
+
+	hasLocked := false
+	hasInProgress := false
+	hasQueued := false
+	allDoneOrFailed := true
+	hasFailed := false
+
+	for _, t := range s.tasks {
+		if t.ChainID != chainID {
+			continue
+		}
+		switch t.Status {
+		case model.TaskStatusLocked:
+			hasLocked = true
+			allDoneOrFailed = false
+		case model.TaskStatusInProgress:
+			hasInProgress = true
+			allDoneOrFailed = false
+		case model.TaskStatusQueued:
+			hasQueued = true
+			allDoneOrFailed = false
+		case model.TaskStatusFailed:
+			hasFailed = true
+		case model.TaskStatusDone:
+			// fine
+		}
+	}
+
+	if allDoneOrFailed {
+		chain.OwnerAgentID = ""
+		if hasFailed {
+			chain.Status = model.ChainStatusFailed
+		} else {
+			chain.Status = model.ChainStatusDone
+		}
+	} else if hasLocked {
+		chain.Status = model.ChainStatusLocked
+	} else if hasInProgress {
+		chain.Status = model.ChainStatusInProgress
+	} else if hasQueued {
+		chain.Status = model.ChainStatusQueued
+	}
+
+	chain.UpdatedAt = now
+	s.chains[chainID] = chain
+}
+
 func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,10 +437,11 @@ func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) 
 	if _, ok := s.channels[t.ChannelID]; !ok {
 		return model.Task{}, store.ErrNotFound
 	}
-	if strings.TrimSpace(t.ChainID) != "" {
-		if _, ok := s.chains[t.ChainID]; !ok {
-			return model.Task{}, errWithCode("chain_id_not_found")
-		}
+	if strings.TrimSpace(t.ChainID) == "" {
+		return model.Task{}, errWithCode("chain_id_required")
+	}
+	if _, ok := s.chains[t.ChainID]; !ok {
+		return model.Task{}, errWithCode("chain_id_not_found")
 	}
 
 	now := time.Now().UTC()
@@ -363,7 +519,16 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 		return nil, errWithCode("channel_id_or_channel_required")
 	}
 
-	// First, try to find a task within an active chain
+	// Check if agent already owns a chain
+	var ownedChainID string
+	for _, chain := range s.chains {
+		if chain.OwnerAgentID == req.AgentID && chain.Status == model.ChainStatusInProgress {
+			ownedChainID = chain.ID
+			break
+		}
+	}
+
+	// Find eligible tasks within active chains (all tasks must belong to a chain)
 	var eligibleChainTasks []model.Task
 	for _, t := range s.tasks {
 		if t.ChannelID != channelID || t.Status != model.TaskStatusQueued || t.ChainID == "" {
@@ -372,6 +537,28 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 
 		chain, ok := s.chains[t.ChainID]
 		if !ok || (chain.Status != model.ChainStatusQueued && chain.Status != model.ChainStatusInProgress) {
+			continue
+		}
+
+		// Skip chains that have any locked tasks
+		hasLockedTask := false
+		for _, ct := range s.tasks {
+			if ct.ChainID == t.ChainID && ct.Status == model.TaskStatusLocked {
+				hasLockedTask = true
+				break
+			}
+		}
+		if hasLockedTask {
+			continue
+		}
+
+		// If agent owns a chain, only consider tasks from that chain
+		if ownedChainID != "" && t.ChainID != ownedChainID {
+			continue
+		}
+
+		// If agent doesn't own a chain, only consider chains that are not owned by anyone
+		if ownedChainID == "" && chain.OwnerAgentID != "" {
 			continue
 		}
 
@@ -418,20 +605,6 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 			return eligibleChainTasks[i].Sequence < eligibleChainTasks[j].Sequence
 		})
 		taskToClaim = &eligibleChainTasks[0]
-	} else {
-		// If no eligible chain tasks, find oldest queued non-chain task
-		var queuedNonChainTasks []model.Task
-		for _, t := range s.tasks {
-			if t.ChannelID == channelID && t.Status == model.TaskStatusQueued && t.ChainID == "" {
-				queuedNonChainTasks = append(queuedNonChainTasks, t)
-			}
-		}
-		if len(queuedNonChainTasks) > 0 {
-			sort.Slice(queuedNonChainTasks, func(i, j int) bool {
-				return queuedNonChainTasks[i].CreatedAt.Before(queuedNonChainTasks[j].CreatedAt)
-			})
-			taskToClaim = &queuedNonChainTasks[0]
-		}
 	}
 
 	if taskToClaim == nil {
@@ -445,14 +618,13 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 	taskToClaim.UpdatedAt = now
 	s.tasks[taskToClaim.ID] = *taskToClaim
 
-	// Update chain status if this is the first task of a chain
-	if taskToClaim.ChainID != "" {
-		chain := s.chains[taskToClaim.ChainID]
-		if chain.Status == model.ChainStatusQueued {
-			chain.Status = model.ChainStatusInProgress
-			chain.UpdatedAt = now
-			s.chains[chain.ID] = chain
-		}
+	// Update chain status and ownership if this is the first task of a chain
+	chain := s.chains[taskToClaim.ChainID]
+	if chain.Status == model.ChainStatusQueued {
+		chain.Status = model.ChainStatusInProgress
+		chain.OwnerAgentID = req.AgentID // Set chain ownership
+		chain.UpdatedAt = now
+		s.chains[chain.ID] = chain
 	}
 
 	if idemKey != "" {
@@ -580,7 +752,51 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 		}
 	}
 
+	// Update chain status (but NOT ownership - ownership persists until explicit detach)
+	if t.ChainID != "" {
+		s.updateChainStatus(t.ChainID, now)
+	}
+
 	return &t, nil
+}
+
+// updateChainStatus updates chain status based on task completion
+// Does NOT release ownership - ownership persists until explicit detach.
+// Must be called with s.mu held.
+func (s *Store) updateChainStatus(chainID string, now time.Time) {
+	chain, ok := s.chains[chainID]
+	if !ok {
+		return
+	}
+
+	allDone := true
+	hasFailed := false
+	for _, t := range s.tasks {
+		if t.ChainID != chainID {
+			continue
+		}
+		if t.Status == model.TaskStatusFailed {
+			hasFailed = true
+		}
+		if t.Status != model.TaskStatusDone && t.Status != model.TaskStatusFailed {
+			allDone = false
+		}
+	}
+
+	// If any task failed, immediately mark chain as failed (halts the chain)
+	if hasFailed {
+		chain.Status = model.ChainStatusFailed
+		chain.UpdatedAt = now
+		s.chains[chainID] = chain
+		return
+	}
+
+	// If all tasks are done, mark chain as done
+	if allDone {
+		chain.Status = model.ChainStatusDone
+		chain.UpdatedAt = now
+		s.chains[chainID] = chain
+	}
 }
 
 func (s *Store) FailTask(_ context.Context, req store.FailTaskRequest) (*model.Task, error) {
@@ -625,6 +841,11 @@ func (s *Store) FailTask(_ context.Context, req store.FailTaskRequest) (*model.T
 			agent.UpdatedAt = now
 			s.agents[agentID] = agent
 		}
+	}
+
+	// Update chain status (but NOT ownership - ownership persists until explicit detach)
+	if t.ChainID != "" {
+		s.updateChainStatus(t.ChainID, now)
 	}
 
 	return &t, nil

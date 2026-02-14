@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -232,6 +234,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	agent, err := s.store.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -239,6 +243,12 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// Verify user owns this agent
+	if agent.UserID != userID {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found")
 		return
 	}
 
@@ -318,6 +328,8 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	userID := userIDFromContext(r.Context())
+
 	agent, err := s.store.GetAgent(r.Context(), agentID)
 	if err != nil {
 		if err == store.ErrNotFound {
@@ -325,6 +337,12 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	// Verify user owns this agent
+	if agent.UserID != userID {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found")
 		return
 	}
 
@@ -568,6 +586,51 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+}
+
+func (s *Server) handleChainDetach(w http.ResponseWriter, r *http.Request) {
+	chainID := strings.TrimSpace(r.PathValue("id"))
+	if chainID == "" {
+		writeError(w, http.StatusBadRequest, "chain_id_required", "chain ID is required")
+		return
+	}
+
+	var req struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	if strings.TrimSpace(req.AgentID) == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent_id is required")
+		return
+	}
+
+	err := s.store.DetachAgentFromChain(r.Context(), store.DetachAgentFromChainRequest{
+		ChainID: chainID,
+		AgentID: req.AgentID,
+	})
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "chain not found")
+			return
+		}
+		if err == store.ErrConflict {
+			writeError(w, http.StatusConflict, "not_owner", "agent is not the owner of this chain")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to detach chain")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+	s.bus.Publish(EventChains, userID)
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventAgents, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 type createTaskRequest struct {
@@ -1061,7 +1124,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 		e, err := s.store.CreateEvent(r.Context(), model.Event{
 			AgentID:        strings.TrimSpace(req.AgentID),
-			TaskID:         strings.TrimSpace(req.TaskID),
+			TaskID:         eventTaskID,
 			Type:           strings.TrimSpace(req.Type),
 			Payload:        req.Payload,
 			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
@@ -1085,6 +1148,240 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+}
+
+func newAgentSessionRequestToken() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return "asr_" + hex.EncodeToString(b[:])
+}
+
+func extractSessionRequestToken(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	keys := []string{
+		"agent_session_request_token",
+		"agentSessionRequestToken",
+		"agent_session_token",
+		"agentSessionToken",
+	}
+	for _, key := range keys {
+		if v, ok := payload[key]; ok {
+			if s, ok := v.(string); ok {
+				if trimmed := strings.TrimSpace(s); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func extractSessionRequestTaskID(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if v, ok := payload["task_id"]; ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	if v, ok := payload["taskId"]; ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+type taskUpdateStatusRequest struct {
+	Status model.TaskStatus `json:"status"`
+}
+
+func (s *Server) handleTaskUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	taskID := strings.TrimSpace(r.PathValue("id"))
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id_required", "task ID is required")
+		return
+	}
+
+	var req taskUpdateStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+
+	t, err := s.store.UpdateTaskStatus(r.Context(), taskID, req.Status)
+	if err != nil {
+		switch err {
+		case store.ErrNotFound:
+			writeError(w, http.StatusNotFound, "not_found", "task not found")
+		case store.ErrConflict:
+			writeError(w, http.StatusConflict, "conflict", "invalid status transition (only locked -> queued or locked -> done)")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		}
+		return
+	}
+
+	s.bus.Publish(EventTasks, userID)
+	s.bus.Publish(EventChains, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"task": t})
+}
+
+type chainAssignAgentRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
+func normalizeSubscriptions(raw any) []string {
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func hasChannelSubscription(agent *model.Agent, channelName string) bool {
+	if agent == nil {
+		return false
+	}
+	channelName = strings.TrimSpace(channelName)
+	if channelName == "" || agent.Meta == nil {
+		return false
+	}
+	subs := normalizeSubscriptions(agent.Meta["subscriptions"])
+	for _, s := range subs {
+		if strings.EqualFold(s, channelName) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	chainID := strings.TrimSpace(r.PathValue("id"))
+	if chainID == "" {
+		writeError(w, http.StatusBadRequest, "chain_id_required", "chain ID is required")
+		return
+	}
+
+	var req chainAssignAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent_id is required")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+
+	// Read existing chain first to preserve name/description/status
+	existing, err := s.store.GetChain(r.Context(), chainID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "chain not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get chain")
+		return
+	}
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	channels, err := s.store.ListChannels(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
+		return
+	}
+
+	channelName := ""
+	for _, ch := range channels {
+		if ch.ID == existing.ChannelID {
+			channelName = ch.Name
+			break
+		}
+	}
+	if channelName == "" {
+		writeError(w, http.StatusNotFound, "not_found", "chain channel not found")
+		return
+	}
+
+	if !hasChannelSubscription(agent, channelName) {
+		writeError(w, http.StatusConflict, "agent_not_subscribed_channel",
+			fmt.Sprintf("agent '%s' is not subscribed to channel '%s'", agentID, channelName))
+		return
+	}
+
+	existing.OwnerAgentID = agentID
+
+	chain, err := s.store.UpdateChain(r.Context(), existing)
+	if err != nil {
+		switch err {
+		case store.ErrNotFound:
+			writeError(w, http.StatusNotFound, "not_found", "chain not found")
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		}
+		return
+	}
+
+	s.bus.Publish(EventChains, userID)
+	s.bus.Publish(EventAgents, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"chain": chain})
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -1127,8 +1424,42 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			b, _ := json.Marshal(ev)
-			_, _ = fmt.Fprintf(w, "event: update\ndata: %s\n\n", string(b))
+			eventName := "update"
+			if ev.Type == EventNotification {
+				eventName = "notification"
+			}
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, string(b))
 			flusher.Flush()
 		}
 	}
+}
+
+func (s *Server) handleNotificationsList(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	list := s.notifTk.List(userID)
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": list})
+}
+
+type dismissNotificationRequest struct {
+	AgentID string `json:"agent_id"`
+	Type    string `json:"type"`
+}
+
+func (s *Server) handleNotificationDismiss(w http.ResponseWriter, r *http.Request) {
+	var req dismissNotificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	agentID := strings.TrimSpace(req.AgentID)
+	typ := strings.TrimSpace(req.Type)
+	if agentID == "" || typ == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id and type are required")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+	s.notifTk.Dismiss(userID, agentID, typ)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

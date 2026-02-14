@@ -9,7 +9,7 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 PLATFORMS="linux/amd64,linux/arm64"
 DOCKERFILE="../coordinator/Dockerfile"
 BUILD_CONTEXT=".."
-ENV_FILE="../.env"
+ENV_FILE="../.env.prod"
 
 ############################################
 # 1. Load .env and export variables
@@ -31,7 +31,7 @@ if ! docker info 2>/dev/null | grep -q "Username"; then
   echo "🔑 Docker login required"
 
   : "${DOCKER_USERNAME:?DOCKER_USERNAME not set}"
-  : "${DOCKER_PASSWORD:?DOCKER_PASSWORD not set}"
+  : "${DOCKER_PAT:?DOCKER_PAT not set}"
 
   echo "$DOCKER_PAT" | docker login \
     -u "$DOCKER_USERNAME" \

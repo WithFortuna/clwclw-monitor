@@ -93,7 +93,7 @@ func setupTestDB(t *testing.T) (*Store, func()) {
 		create table if not exists public.tasks (
 		id uuid primary key default gen_random_uuid(),
 		channel_id uuid not null references public.channels(id) on delete restrict,
-		chain_id uuid null references public.chains(id) on delete set null, -- New field
+		chain_id uuid not null references public.chains(id) on delete cascade, -- All tasks must belong to a chain
 		sequence integer null, -- New field
 		title text not null,
 		description text null,
@@ -228,29 +228,7 @@ func setupTestDB(t *testing.T) (*Store, func()) {
 				RETURN;
 			END IF;
 
-			-- 3. Fallback: Claim the oldest non-chain 'queued' task
-			SELECT t.id
-			INTO v_task_id
-			FROM public.tasks t
-			WHERE t.channel_id = p_channel_id
-			AND t.status = 'queued'
-			AND t.chain_id IS NULL
-			ORDER BY t.created_at ASC
-			FOR UPDATE SKIP LOCKED
-			LIMIT 1;
-
-			IF v_task_id IS NOT NULL THEN
-				UPDATE public.tasks
-				SET status = 'in_progress',
-					assigned_agent_id = p_agent_id,
-					claimed_at = NOW(),
-					updated_at = NOW()
-				WHERE id = v_task_id
-				RETURNING *;
-				RETURN NEXT;
-				RETURN;
-			END IF;
-
+			-- No standalone fallback - all tasks must belong to a chain
 			RETURN;
 		END;
 		$$;
@@ -328,6 +306,20 @@ func TestPostgresStore_ChainCRUD(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
+func TestPostgresStore_CreateTaskRequiresChainID(t *testing.T) {
+	s, teardown := setupTestDB(t)
+	defer teardown()
+	ctx := context.Background()
+
+	ch, err := s.CreateChannel(ctx, model.Channel{Name: "chain-req-test-pg"})
+	assert.NoError(t, err)
+
+	// Creating a task without chain_id should fail
+	_, err = s.CreateTask(ctx, model.Task{ChannelID: ch.ID, Title: "No chain task PG"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "chain_id_required")
+}
+
 func TestPostgresStore_ClaimTaskWithChains(t *testing.T) {
 	s, teardown := setupTestDB(t)
 	defer teardown()
@@ -368,10 +360,6 @@ func TestPostgresStore_ClaimTaskWithChains(t *testing.T) {
 	task2_1, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain2.ID, Sequence: 1, Title: "Task 2.1 PG"})
 	assert.NoError(t, err)
 
-	// Create a non-chain task
-	nonChainTask, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, Title: "Non-chain Task PG"})
-	assert.NoError(t, err)
-
 	// Test case 1: Claim first task of chain-alpha (should make chain-alpha InProgress)
 	claimedTask, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
 	assert.NoError(t, err)
@@ -384,7 +372,6 @@ func TestPostgresStore_ClaimTaskWithChains(t *testing.T) {
 	assert.Equal(t, model.ChainStatusInProgress, updatedChain1.Status)
 
 	// Test case 2: Claim another task. Should be task 2.1 (from chain beta)
-	// because 1.1 is in progress.
 	claimedTask, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
 	assert.NoError(t, err)
 	assert.Equal(t, task2_1.ID, claimedTask.ID)
@@ -417,15 +404,8 @@ func TestPostgresStore_ClaimTaskWithChains(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, model.ChainStatusDone, updatedChain1.Status)
 
-	// Test case 6: Claim non-chain task
-	claimedTask, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
-	assert.NoError(t, err)
-	assert.Equal(t, nonChainTask.ID, claimedTask.ID)
-
-	// Test case 7: No more queued tasks at all
+	// Test case 6: No more queued tasks at all
 	_, err = s.CompleteTask(ctx, store.CompleteTaskRequest{TaskID: task2_1.ID, AgentID: agent.ID})
-	assert.NoError(t, err)
-	_, err = s.CompleteTask(ctx, store.CompleteTaskRequest{TaskID: nonChainTask.ID, AgentID: agent.ID})
 	assert.NoError(t, err)
 
 	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
@@ -520,4 +500,122 @@ func TestPostgresStore_FailChainTaskUpdatesChainStatus(t *testing.T) {
 	// Try to claim task 2 (should not be claimable as chain is failed)
 	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
 	assert.ErrorIs(t, err, store.ErrNoQueuedTasks) // Expect no more queued tasks for this chain
+}
+
+func TestPostgresStore_DetachAgentFromChain(t *testing.T) {
+	s, teardown := setupTestDB(t)
+	defer teardown()
+	ctx := context.Background()
+
+	ch, err := s.CreateChannel(ctx, model.Channel{Name: "detach-channel-pg"})
+	assert.NoError(t, err)
+
+	agent := model.Agent{ID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", Name: "Detach Agent PG"}
+	_, err = s.UpsertAgent(ctx, agent)
+	assert.NoError(t, err)
+
+	chain, err := s.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "detach-chain-pg",
+		Status:    model.ChainStatusQueued,
+	})
+	assert.NoError(t, err)
+
+	task1, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 1, Title: "Detach Task 1 PG"})
+	assert.NoError(t, err)
+	_, err = s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Detach Task 2 PG"})
+	assert.NoError(t, err)
+
+	// Claim first task
+	claimed, err := s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	assert.Equal(t, task1.ID, claimed.ID)
+
+	// Detach agent
+	err = s.DetachAgentFromChain(ctx, store.DetachAgentFromChainRequest{
+		ChainID: chain.ID,
+		AgentID: agent.ID,
+	})
+	assert.NoError(t, err)
+
+	// Verify chain is locked with no owner
+	updChain, err := s.GetChain(ctx, chain.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, model.ChainStatusLocked, updChain.Status)
+	assert.Equal(t, "", updChain.OwnerAgentID)
+
+	// Verify task is locked
+	tasks, err := s.ListTasks(ctx, store.TaskFilter{ChainID: chain.ID})
+	assert.NoError(t, err)
+	var lockedTask *model.Task
+	for _, tk := range tasks {
+		if tk.Status == model.TaskStatusLocked {
+			lockedTask = &tk
+			break
+		}
+	}
+	assert.NotNil(t, lockedTask)
+	assert.Equal(t, task1.ID, lockedTask.ID)
+
+	// Verify agent's current_task_id is cleared
+	ag, err := s.GetAgent(ctx, agent.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", ag.CurrentTaskID)
+}
+
+func TestPostgresStore_UpdateTaskStatus(t *testing.T) {
+	s, teardown := setupTestDB(t)
+	defer teardown()
+	ctx := context.Background()
+
+	ch, err := s.CreateChannel(ctx, model.Channel{Name: "status-channel-pg"})
+	assert.NoError(t, err)
+
+	agent := model.Agent{ID: "b2c3d4e5-f6a7-8901-bcde-f12345678901", Name: "Status Agent PG"}
+	_, err = s.UpsertAgent(ctx, agent)
+	assert.NoError(t, err)
+
+	chain, err := s.CreateChain(ctx, model.Chain{
+		ChannelID: ch.ID,
+		Name:      "status-chain-pg",
+		Status:    model.ChainStatusQueued,
+	})
+	assert.NoError(t, err)
+
+	task1, err := s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 1, Title: "Status Task 1 PG"})
+	assert.NoError(t, err)
+	_, err = s.CreateTask(ctx, model.Task{ChannelID: ch.ID, ChainID: chain.ID, Sequence: 2, Title: "Status Task 2 PG"})
+	assert.NoError(t, err)
+
+	// Claim and detach to get a locked task
+	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	err = s.DetachAgentFromChain(ctx, store.DetachAgentFromChainRequest{
+		ChainID: chain.ID,
+		AgentID: agent.ID,
+	})
+	assert.NoError(t, err)
+
+	// Test locked → queued
+	updated, err := s.UpdateTaskStatus(ctx, task1.ID, model.TaskStatusQueued)
+	assert.NoError(t, err)
+	assert.Equal(t, model.TaskStatusQueued, updated.Status)
+	assert.Equal(t, "", updated.AssignedAgentID)
+
+	// Test locked → done (claim and detach again first)
+	_, err = s.ClaimTask(ctx, store.ClaimTaskRequest{AgentID: agent.ID, ChannelID: ch.ID})
+	assert.NoError(t, err)
+	err = s.DetachAgentFromChain(ctx, store.DetachAgentFromChainRequest{
+		ChainID: chain.ID,
+		AgentID: agent.ID,
+	})
+	assert.NoError(t, err)
+
+	updated, err = s.UpdateTaskStatus(ctx, task1.ID, model.TaskStatusDone)
+	assert.NoError(t, err)
+	assert.Equal(t, model.TaskStatusDone, updated.Status)
+
+	// Cannot update non-locked task
+	_, err = s.UpdateTaskStatus(ctx, task1.ID, model.TaskStatusQueued)
+	assert.ErrorIs(t, err, store.ErrConflict)
 }

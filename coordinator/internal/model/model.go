@@ -34,6 +34,7 @@ const (
 	TaskStatusInProgress TaskStatus = "in_progress"
 	TaskStatusDone       TaskStatus = "done"
 	TaskStatusFailed     TaskStatus = "failed"
+	TaskStatusLocked     TaskStatus = "locked"
 )
 
 type ExecutionMode string
@@ -51,6 +52,7 @@ const (
 	ChainStatusInProgress ChainStatus = "in_progress"
 	ChainStatusDone       ChainStatus = "done"
 	ChainStatusFailed     ChainStatus = "failed"
+	ChainStatusLocked     ChainStatus = "locked"
 )
 
 type Agent struct {

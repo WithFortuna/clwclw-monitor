@@ -46,9 +46,11 @@ const els = {
 
 let lastTasksById = new Map();
 let lastChainsById = new Map();
+let lastAgentsById = new Map();
 let lastPromptByTaskId = new Map();
 let lastChannels = [];
 let lastChains = [];
+let lastAgents = [];
 let promptModalState = { taskId: '', agentId: '', event: null };
 
 // --- Notification State ---
@@ -78,8 +80,19 @@ async function api(path, options = {}) {
     return;
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`${res.status} ${text}`);
+    let payload = null;
+    let text = '';
+    try {
+      payload = await res.json();
+    } catch {
+      text = await res.text().catch(() => '');
+    }
+    const msg = payload?.error?.message || text || `request failed (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = payload?.error?.code || '';
+    err.payload = payload;
+    throw err;
   }
   return res.json();
 }
@@ -173,7 +186,16 @@ function escapeHtml(str) {
     .replaceAll("'", '&#39;');
 }
 
+function normalizeSubs(subs) {
+  if (!Array.isArray(subs)) return [];
+  return subs.map((s) => String(s || '').trim()).filter(Boolean);
+}
+
 function renderAgents(agents) {
+  // 인라인 편집 input이 실제 포커스 상태일 때만 리렌더링 스킵
+  const activeSubsInput = els.agentsTbody.querySelector('.subs-cell input');
+  if (activeSubsInput && document.activeElement === activeSubsInput) return;
+
   els.agentsCount.textContent = String(agents.length);
 
   if (!agents.length) {
@@ -186,7 +208,7 @@ function renderAgents(agents) {
       const name = a.name || a.id || '-';
       const subs = Array.isArray(a?.meta?.subscriptions) ? a.meta.subscriptions.join(', ') : '';
       // Display tmux info: prefer tmux_display (dynamically resolved #S:#I.#P from pane_id)
-      const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || a?.meta?.tmux_session || '';
+      const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
       const claudeStatus = a.claude_status || a.status || 'idle';
       const agentState = a?.meta?.state || '';
@@ -223,7 +245,7 @@ function renderAgents(agents) {
     .join('');
 }
 
-function renderTaskBoard(channels, chains, tasks) {
+function renderTaskBoard(channels, chains, tasks, agents) {
   if (!channels.length && !chains.length && !tasks.length) {
     els.taskBoard.innerHTML = `<div class="muted">No channels, chains, or tasks yet.</div>`;
     return;
@@ -237,66 +259,69 @@ function renderTaskBoard(channels, chains, tasks) {
     chainsByChannel.get(cid).push(ch);
   }
 
-  // Index tasks by chain
+  // Index tasks by chain (all tasks must belong to a chain)
   const tasksByChain = new Map();
-  const standaloneTasks = new Map(); // channel_id -> tasks without chain
   for (const t of tasks) {
-    if (t.chain_id) {
-      if (!tasksByChain.has(t.chain_id)) tasksByChain.set(t.chain_id, []);
-      tasksByChain.get(t.chain_id).push(t);
-    } else {
-      const cid = t.channel_id || 'unknown';
-      if (!standaloneTasks.has(cid)) standaloneTasks.set(cid, []);
-      standaloneTasks.get(cid).push(t);
-    }
+    const chainId = t.chain_id || 'unknown';
+    if (!tasksByChain.has(chainId)) tasksByChain.set(chainId, []);
+    tasksByChain.get(chainId).push(t);
   }
 
   const output = [];
 
   for (const channel of channels) {
     const channelChains = chainsByChannel.get(channel.id) || [];
-    const standalone = standaloneTasks.get(channel.id) || [];
-    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0) + standalone.length;
+    const totalTasks = channelChains.reduce((sum, ch) => sum + (tasksByChain.get(ch.id) || []).length, 0);
 
     let inner = '';
 
-    // Render each chain within this channel
+    // Render each chain within this channel (all tasks belong to a chain)
     for (const ch of channelChains) {
       const list = tasksByChain.get(ch.id) || [];
       if (!list.length) continue;
       const queued = list.filter((t) => t.status === 'queued').sort((a, b) => a.sequence - b.sequence);
-      const prog = list.filter((t) => t.status === 'in_progress').sort((a, b) => a.sequence - b.sequence);
+      const locked = list.filter((t) => t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
+      const prog = list.filter((t) => t.status === 'in_progress' || t.status === 'locked').sort((a, b) => a.sequence - b.sequence);
       const done = list.filter((t) => t.status === 'done').sort((a, b) => a.sequence - b.sequence);
       const failed = list.filter((t) => t.status === 'failed').sort((a, b) => a.sequence - b.sequence);
 
-      inner += `
-        <div class="chain-group">
-          <div class="chain-title">
-            <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)}</div>
-            <span class="pill">${list.length} tasks</span>
-          </div>
-          <div class="board">
-            ${renderTaskCol('Queued', queued, { variant: 'queued' })}
-            ${renderTaskCol('In Progress', prog, { variant: 'in_progress' })}
-            ${renderTaskCol('Done', done, { variant: 'done' })}
-            ${renderTaskCol('Failed', failed, { variant: 'failed' })}
-          </div>
-        </div>
-      `;
-    }
+      // Owner agent info
+      const ownerAgent = ch.owner_agent_id ? lastAgentsById.get(ch.owner_agent_id) : null;
+      const ownerName = ownerAgent ? (ownerAgent.name || ownerAgent.id) : '';
+      const isLocked = ch.status === 'locked' || locked.length > 0;
+      const hasOwner = !!ch.owner_agent_id;
 
-    // Render standalone tasks (no chain)
-    if (standalone.length) {
-      const queued = standalone.filter((t) => t.status === 'queued');
-      const prog = standalone.filter((t) => t.status === 'in_progress');
-      const done = standalone.filter((t) => t.status === 'done');
-      const failed = standalone.filter((t) => t.status === 'failed');
+      // Build agent assignment dropdown (online agents)
+      const onlineAgents = agents.filter(a => {
+        const ws = a.worker_status || deriveWorkerStatus(a.last_seen);
+        return ws === 'online';
+      });
+      let assignDropdown = '';
+      if (!hasOwner || isLocked) {
+        const opts = onlineAgents.map(a =>
+          `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`
+        ).join('');
+        assignDropdown = `<select class="agent-assign-dropdown" data-chain-id="${escapeHtml(ch.id)}" data-channel-name="${escapeHtml(channel.name)}">
+          <option value="">Assign agent…</option>${opts}
+        </select>`;
+      }
+
+      // Owner display with detach button
+      let ownerHtml = '';
+      if (hasOwner) {
+        ownerHtml = `<span class="chain-owner">${escapeHtml(ownerName)}</span>
+          <button class="detach-btn" data-action="detach" data-chain-id="${escapeHtml(ch.id)}" data-agent-id="${escapeHtml(ch.owner_agent_id)}" title="Detach agent">&times;</button>`;
+      } else {
+        ownerHtml = `<span class="muted" style="font-size:11px;">No agent</span>`;
+      }
+
+      const chainClass = isLocked ? 'chain-group chain-locked' : 'chain-group';
 
       inner += `
-        <div class="chain-group">
+        <div class="${chainClass}">
           <div class="chain-title">
-            <div class="chain-badge"><strong>Standalone</strong> Tasks</div>
-            <span class="pill">${standalone.length} tasks</span>
+            <div class="chain-badge"><strong>Chain</strong>: ${escapeHtml(ch.name)} ${claudeStatusBadge(ch.status)} ${ownerHtml}</div>
+            <div style="display:flex;align-items:center;gap:8px;">${assignDropdown}<span class="pill">${list.length} tasks</span></div>
           </div>
           <div class="board">
             ${renderTaskCol('Queued', queued, { variant: 'queued' })}
@@ -330,37 +355,44 @@ function renderTaskCol(title, tasks, opts = {}) {
   const variant = opts.variant || '';
   const items = tasks
     .map(
-      (t) => `
-      <div class="task task-${variant}">
-        <div class="task-title">${escapeHtml(t.title)}</div>
-        <div class="task-desc">${escapeHtml(t.description || '')}</div>
-        ${
-          variant === 'queued'
-            ? `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
-                 <button class="btn" data-action="assign" data-task-id="${escapeHtml(t.id)}">Assign…</button>
-               </div>`
-            : ''
+      (t) => {
+        const isLocked = t.status === 'locked';
+        const taskClass = isLocked ? 'task task-locked' : `task task-${variant}`;
+
+        let actions = '';
+        if (isLocked) {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            <button class="btn" data-action="task-status" data-task-id="${escapeHtml(t.id)}" data-status="queued">→ Queued</button>
+            <button class="btn" data-action="task-status" data-task-id="${escapeHtml(t.id)}" data-status="done">→ Done</button>
+            <div class="muted" style="font-size:11px;">locked</div>
+          </div>`;
+        } else if (variant === 'queued') {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            <button class="btn" data-action="assign" data-task-id="${escapeHtml(t.id)}">Assign…</button>
+          </div>`;
+        } else if (variant === 'in_progress') {
+          actions = `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
+            ${lastPromptByTaskId.has(t.id)
+              ? `<button class="btn" data-action="prompt" data-task-id="${escapeHtml(t.id)}">Prompt…</button>`
+              : ''}
+            <button class="btn" data-action="complete" data-task-id="${escapeHtml(t.id)}">Mark Done</button>
+            <button class="btn danger" data-action="fail" data-task-id="${escapeHtml(t.id)}">Fail</button>
+            <div class="muted" style="font-size:11px;">agent: ${escapeHtml(t.assigned_agent_id || '')}</div>
+          </div>`;
         }
-        ${
-          variant === 'in_progress'
-            ? `<div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
-                 ${
-                   lastPromptByTaskId.has(t.id)
-                     ? `<button class="btn" data-action="prompt" data-task-id="${escapeHtml(t.id)}">Prompt…</button>`
-                     : ''
-                 }
-                 <button class="btn" data-action="complete" data-task-id="${escapeHtml(t.id)}">Mark Done</button>
-                 <button class="btn danger" data-action="fail" data-task-id="${escapeHtml(t.id)}">Fail</button>
-                 <div class="muted" style="font-size:11px;">agent: ${escapeHtml(t.assigned_agent_id || '')}</div>
-               </div>`
-            : ''
-        }
-        <div class="muted" style="margin-top:6px;font-size:11px;">
-          ${t.chain_id ? `chain: ${escapeHtml(t.chain_id)} seq: ${t.sequence}<br>` : ''}
-          ${escapeHtml(t.id)}
+
+        return `
+        <div class="${taskClass}">
+          <div class="task-title">${escapeHtml(t.title)}</div>
+          <div class="task-desc">${escapeHtml(t.description || '')}</div>
+          ${actions}
+          <div class="muted" style="margin-top:6px;font-size:11px;">
+            ${t.chain_id ? `chain: ${escapeHtml(t.chain_id)} seq: ${t.sequence}<br>` : ''}
+            ${escapeHtml(t.id)}
+          </div>
         </div>
-      </div>
-    `,
+      `;
+      },
     )
     .join('');
 
@@ -573,18 +605,20 @@ async function refresh() {
   const events = dash.events || [];
 
   lastTasksById = new Map(tasks.map((t) => [t.id, t]));
-  lastChainsById = new Map(chains.map((c) => [c.id, c])); // Populate lastChainsById
+  lastChainsById = new Map(chains.map((c) => [c.id, c]));
+  lastAgentsById = new Map(agents.map((a) => [a.id, a]));
   lastPromptByTaskId = computeLatestPrompts(events);
 
   lastChannels = channels;
   lastChains = chains;
+  lastAgents = agents;
 
   els.lastRefresh.textContent = fmtTime(new Date().toISOString());
   renderAgents(agents);
   fillChannelSelect(els.taskChannel, channels);
   fillChannelSelect(els.claimChannel, channels);
   fillChainSelect(els.taskChain, chains, els.taskChannel.value);
-  renderTaskBoard(channels, chains, tasks);
+  renderTaskBoard(channels, chains, tasks, agents);
   renderEvents(events);
 }
 
@@ -742,16 +776,30 @@ async function main() {
     const btn = ev.target?.closest?.('button[data-action]');
     if (!btn) return;
 
-    const task_id = btn.getAttribute('data-task-id');
-    if (!task_id && btn.getAttribute('data-action') !== 'prompt-option') return;
     const action = btn.getAttribute('data-action') || '';
+    const task_id = btn.getAttribute('data-task-id');
 
     try {
       if (action === 'prompt') {
         openPromptModal(task_id);
         return;
       }
-      if (action === 'complete') {
+      if (action === 'detach') {
+        const chainId = btn.getAttribute('data-chain-id');
+        const agentId = btn.getAttribute('data-agent-id');
+        if (!chainId || !agentId) return;
+        await api(`/v1/chains/${encodeURIComponent(chainId)}/detach`, {
+          method: 'POST',
+          body: JSON.stringify({ agent_id: agentId }),
+        });
+      } else if (action === 'task-status') {
+        const status = btn.getAttribute('data-status');
+        if (!task_id || !status) return;
+        await api(`/v1/tasks/${encodeURIComponent(task_id)}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status }),
+        });
+      } else if (action === 'complete') {
         await api('/v1/tasks/complete', {
           method: 'POST',
           body: JSON.stringify({ task_id }),
@@ -771,6 +819,55 @@ async function main() {
       }
       await refresh();
     } catch (err) {
+      showError(err);
+    }
+  });
+
+  // Agent assignment dropdown on chain cards
+  els.taskBoard.addEventListener('change', async (ev) => {
+    const dropdown = ev.target?.closest?.('.agent-assign-dropdown');
+    if (!dropdown) return;
+    const chainId = dropdown.getAttribute('data-chain-id');
+    const channelName = (dropdown.getAttribute('data-channel-name') || '').trim();
+    const agentId = dropdown.value;
+    if (!chainId || !agentId) return;
+    try {
+      await api(`/v1/chains/${encodeURIComponent(chainId)}/assign-agent`, {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      await refresh();
+    } catch (err) {
+      if (err?.code === 'agent_not_subscribed_channel' && channelName) {
+        const shouldSubscribe = window.confirm(
+          `이 에이전트는 '${channelName}' 채널을 구독하지 않습니다.\n지금 구독에 추가하고 체인 할당을 다시 시도할까요?`,
+        );
+        if (!shouldSubscribe) {
+          dropdown.value = '';
+          return;
+        }
+
+        const agent = lastAgentsById.get(agentId);
+        const currentSubs = normalizeSubs(agent?.meta?.subscriptions);
+        const exists = currentSubs.some((s) => s.toLowerCase() === channelName.toLowerCase());
+        const nextSubs = exists ? currentSubs : [...currentSubs, channelName];
+
+        try {
+          await api(`/v1/agents/${encodeURIComponent(agentId)}/channels`, {
+            method: 'PATCH',
+            body: JSON.stringify({ subscriptions: nextSubs }),
+          });
+          await api(`/v1/chains/${encodeURIComponent(chainId)}/assign-agent`, {
+            method: 'POST',
+            body: JSON.stringify({ agent_id: agentId }),
+          });
+          await refresh();
+          return;
+        } catch (retryErr) {
+          showError(retryErr);
+          return;
+        }
+      }
       showError(err);
     }
   });
@@ -862,37 +959,104 @@ async function main() {
     const agentId = cell.getAttribute('data-agent-id');
     const currentSubs = cell.getAttribute('data-subs') || '';
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = currentSubs;
-    input.placeholder = 'channel1, channel2';
-    input.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;background:#1a1a2e;color:#e0e0e0;border:1px solid #6ee7b7;border-radius:3px;';
+    const currentList = currentSubs
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const current = currentList[0] || '';
+    const channelNames = (lastChannels || [])
+      .map((c) => String(c?.name || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+
+    let finished = false;
+
+    const renderCellValue = (subsText, stateText = '') => {
+      const safeSubs = escapeHtml(subsText);
+      const valueHtml = safeSubs || '<span class="muted" style="opacity:0.5">click to assign</span>';
+      const stateHtml = stateText
+        ? ` <span class="muted" style="font-size:11px;opacity:0.85;">${escapeHtml(stateText)}</span>`
+        : '';
+      cell.setAttribute('data-subs', subsText);
+      cell.style.cursor = 'pointer';
+      cell.innerHTML = `${valueHtml}${stateHtml}`;
+    };
+
+    if (!channelNames.length) {
+      renderCellValue(currentSubs, 'no channels to select');
+      return;
+    }
+
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;background:#1a1a2e;color:#e0e0e0;border:1px solid #6ee7b7;border-radius:3px;';
+
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '(none)';
+    if (!current) emptyOpt.selected = true;
+    select.appendChild(emptyOpt);
+
+    channelNames.forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === current) opt.selected = true;
+      select.appendChild(opt);
+    });
 
     cell.textContent = '';
-    cell.appendChild(input);
-    input.focus();
-    input.select();
+    cell.appendChild(select);
+    select.focus();
 
     const save = async () => {
-      const val = input.value.trim();
-      const subs = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (finished) return;
+      finished = true;
+      select.removeEventListener('keydown', onKeyDown);
+      select.removeEventListener('change', onChange);
+      if (document.activeElement === select) select.blur();
+
+      const selected = String(select.value || '').trim();
+      const subs = selected ? [selected] : [];
+      const nextSubs = subs.join(', ');
+      renderCellValue(nextSubs, 'saving...');
+
       try {
         await api(`/v1/agents/${encodeURIComponent(agentId)}/channels`, {
           method: 'PATCH',
           body: JSON.stringify({ subscriptions: subs }),
         });
+        renderCellValue(nextSubs, 'saved');
       } catch (err) {
         showError(err);
+        renderCellValue(currentSubs, 'save failed');
       }
+
       // SSE will trigger refresh; do explicit refresh as fallback
       await refresh().catch(() => {});
     };
 
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-      if (e.key === 'Escape') { e.preventDefault(); refresh().catch(() => {}); }
-    });
-    input.addEventListener('blur', save, { once: true });
+    const cancel = () => {
+      if (finished) return;
+      finished = true;
+      select.removeEventListener('keydown', onKeyDown);
+      select.removeEventListener('change', onChange);
+      if (document.activeElement === select) select.blur();
+      renderCellValue(currentSubs, 'cancelled');
+      refresh().catch(() => {});
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    };
+    const onChange = () => {
+      save().catch(() => {});
+    };
+
+    select.addEventListener('keydown', onKeyDown);
+    select.addEventListener('change', onChange);
   });
 
   els.taskChannel.addEventListener('change', () => {
@@ -1003,6 +1167,13 @@ async function main() {
   }
 
   await refresh();
+  // Load initial unseen count from server
+  try {
+    const data = await api('/v1/notifications');
+    const list = data.notifications || [];
+    unseenCount = list.length;
+    renderBellBadge();
+  } catch { /* ignore */ }
   startStream();
 
   setInterval(() => {
