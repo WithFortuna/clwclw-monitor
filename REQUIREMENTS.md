@@ -36,7 +36,9 @@
 ### 4.2 웹뷰 대시보드 (배포형)
 - 인터넷에서 접근 가능한 웹 UI 제공
 - 현재 활성 에이전트 수 표시
+- 에이전트 목록 응답(`GET /v1/agents`, `GET /v1/dashboard`)은 기본적으로 에이전트 이름 오름차순으로 정렬되어야 한다. (리렌더링 시 순서 안정성)
 - 에이전트별 상태 및 현재 작업 표시
+- Worker 상태가 `offline`이면 Claude 상태는 `not running`으로 표시되어야 하며, API에서는 `claude_status=idle`로 정규화되어야 한다.
 - 에이전트별 작업 이력(타임라인) 표시
 
 ### 4.3 작업 태스크 보드 (Jira 유사, 최소 기능)
@@ -48,6 +50,7 @@
 - `Channel:{name}` 헤더 우측에 `새 체인` 버튼을 두고, 클릭 시 작은 popover에서 체인 이름을 입력해 생성할 수 있어야 한다.
 - 각 체인의 `Queued` 컬럼 헤더 우측에는 `+` 버튼을 두고, 작은 popover에서 Task 제목을 입력해 생성할 수 있어야 한다.
 - `Queued` 컬럼의 popover로 Task 생성 시 `channel_id`와 `chain_id`는 해당 카드 컨텍스트를 자동 사용해야 하며, 사용자가 별도로 입력하지 않아야 한다.
+- 체인/Queued popover 입력 중 auto refresh(SSE/poll)로 인한 리렌더가 발생해도 입력 draft와 focus가 끊기지 않아야 한다.
 
 ### 4.4 태스크 분배 모델
 - 분배 방식: **FIFO**

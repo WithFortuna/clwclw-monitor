@@ -150,8 +150,8 @@ function deriveWorkerStatus(lastSeen) {
   return age < threshold ? 'online' : 'offline';
 }
 
-function workerStatusBadge(lastSeen) {
-  const status = deriveWorkerStatus(lastSeen);
+function workerStatusBadge(workerStatus, lastSeen) {
+  const status = workerStatus || deriveWorkerStatus(lastSeen);
   const cls = status === 'online' ? 'badge ok' : 'badge err';
   return `<span class="${cls}">${status}</span>`;
 }
@@ -267,7 +267,7 @@ async function createChainFromPopover(channelId, rawName) {
   if (created?.chain?.id) {
     expandedChainIds.add(created.chain.id);
   }
-  await refresh();
+  await refresh({ forceTaskBoardRender: true });
 }
 
 function focusQueuedTaskCreateInput(channelId, chainId) {
@@ -298,7 +298,14 @@ async function createTaskFromQueuedPopover(channelId, chainId, rawTitle) {
 
   queuedTaskDraftTitlesByChainId.delete(chainId);
   openQueuedTaskCreateKey = '';
-  await refresh();
+  await refresh({ forceTaskBoardRender: true });
+}
+
+function shouldSkipTaskBoardRender(options = {}) {
+  if (options.forceTaskBoardRender) return false;
+  const active = document.activeElement;
+  if (!active) return false;
+  return !!active.closest?.('.chain-create-input, .queued-task-create-input');
 }
 
 function renderAgents(agents) {
@@ -320,7 +327,9 @@ function renderAgents(agents) {
       // Display tmux info: prefer tmux_display (dynamically resolved #S:#I.#P from pane_id)
       const tmux = a?.meta?.tmux_display || a?.meta?.pane_id || a?.meta?.tmux_target || '';
       const workerStatus = a.worker_status ? a.worker_status : deriveWorkerStatus(a.last_seen);
-      const claudeStatus = a.claude_status || a.status || 'idle';
+      const claudeStatus = workerStatus === 'offline'
+        ? 'not running'
+        : (a.claude_status || a.status || 'idle');
       const agentState = a?.meta?.state || '';
       const isSetupWaiting = agentState === 'setup_waiting' && !tmux;
       const hasSubs = Array.isArray(a?.meta?.subscriptions) && a.meta.subscriptions.length > 0;
@@ -343,7 +352,7 @@ function renderAgents(agents) {
 
       return `<tr>
         <td>${escapeHtml(name)}</td>
-        <td>${workerStatusBadge(a.last_seen)}</td>
+        <td>${workerStatusBadge(workerStatus, a.last_seen)}</td>
         <td>${claudeStatusBadge(claudeStatus)}</td>
         <td class="muted subs-cell" data-agent-id="${escapeHtml(a.id)}" data-subs="${escapeHtml(subs)}" title="Click to edit"
             style="cursor:pointer;">${escapeHtml(subs) || '<span class="muted" style="opacity:0.5">click to assign</span>'}</td>
@@ -742,7 +751,7 @@ async function sendPromptKeys(keys, opts = {}) {
   await sendTaskInput('keys', text, false, opts);
 }
 
-async function refresh() {
+async function refresh(options = {}) {
   const dash = await api('/v1/dashboard');
   const agents = dash.agents || [];
   const channels = dash.channels || [];
@@ -765,7 +774,9 @@ async function refresh() {
   fillChannelSelect(els.taskChannel, channels);
   fillChannelSelect(els.claimChannel, channels);
   fillChainSelect(els.taskChain, chains, els.taskChannel.value);
-  renderTaskBoard(channels, chains, tasks, agents);
+  if (!shouldSkipTaskBoardRender(options)) {
+    renderTaskBoard(channels, chains, tasks, agents);
+  }
   renderEvents(events);
 }
 
