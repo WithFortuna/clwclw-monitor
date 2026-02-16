@@ -31,3 +31,5 @@
 - `0061-fix-queued-popover-refresh-focus-race.md` — **Done** — 체인/Queued popover 입력 중 refresh 리렌더로 인한 포커스/드래프트 유실 방지
 - `0062-fix-agent-list-order-jitter.md` — **Done** — 에이전트 목록 응답을 이름 오름차순으로 고정해 대시보드 리렌더링 순서 흔들림 제거
 - `0063-offline-worker-forces-claude-not-running.md` — **Done** — Worker가 offline일 때 Claude 상태를 not running으로 강제
+- `0066-root-license-agpl.md` — **Done** — 루트 프로젝트 라이선스를 AGPL로 전환하고 `Claude-Code-Remote/`는 원 라이선스를 유지
+- `0067-fix-deploy-npm-workspace-from-deploy-dir.md` — **Done** — `deploy/` 실행 기준으로 npm workspace publish 실패(`No workspaces found`) 수정
