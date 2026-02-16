@@ -1,0 +1,25 @@
+{
+  "name": "@clwclw-monitor/agent",
+  "version": "0.1.1",
+  "description": "Agent bridge for clwclw-monitor coordinator",
+  "bin": {
+    "clwclw-agent": "./clw-agent.js"
+  },
+  "files": [
+    "clw-agent.js",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "rm -rf node_modules/claude-code-remote && mkdir -p node_modules && cp -rL ../node_modules/claude-code-remote node_modules/claude-code-remote"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "claude-code-remote": "*"
+  },
+  "bundledDependencies": [
+    "claude-code-remote"
+  ]
+}

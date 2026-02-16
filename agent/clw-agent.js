@@ -18,6 +18,33 @@ const os = require('os');
 const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 
+/* ── npm install detection & Claude-Code-Remote path resolution ── */
+
+function isNpmInstall() {
+  return __dirname.includes('node_modules');
+}
+
+function getRemotePath() {
+  // 1. Environment variable override
+  if (process.env.CLAUDE_CODE_REMOTE_PATH) return process.env.CLAUDE_CODE_REMOTE_PATH;
+  // 2. npm install: resolve from node_modules
+  try {
+    return path.dirname(require.resolve('claude-code-remote/package.json'));
+  } catch {}
+  // 3. Local repo: legacy relative path
+  const local = path.join(__dirname, '..', 'Claude-Code-Remote');
+  if (fs.existsSync(local)) return local;
+  return null;
+}
+
+function defaultDataRoot() {
+  if (isNpmInstall()) {
+    const xdg = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+    return path.join(xdg, 'clwclw-agent');
+  }
+  return __dirname; // existing behavior
+}
+
 function loadDotEnvIfPresent(filePath) {
   if (!filePath) return;
   if (!fs.existsSync(filePath)) return;
@@ -102,9 +129,10 @@ Env:
  * Use this for global per-mode files: coordinator-url.txt, agent-token.txt.
  */
 function modeDataDir() {
+  const root = defaultDataRoot();
   const mode = getDeployMode();
-  if (!mode) return path.join(__dirname, 'data');
-  return path.join(__dirname, mode, 'data');
+  if (!mode) return path.join(root, 'data');
+  return path.join(root, mode, 'data');
 }
 
 function coordinatorBaseUrl() {
@@ -164,12 +192,13 @@ function agentDataDir() {
     return path.resolve(repoRoot, override);
   }
 
+  const root = defaultDataRoot();
   const mode = getDeployMode();
   if (!mode) {
     // Fallback for backward compat (mode not yet configured)
-    return path.join(__dirname, 'data');
+    return path.join(root, 'data');
   }
-  return path.join(__dirname, mode, 'data');
+  return path.join(root, mode, 'data');
 }
 
 function getOrCreateAgentId() {
@@ -357,9 +386,10 @@ function tmuxTargetWithoutPane(target) {
 }
 
 function stateInstancesRoot() {
+  const root = defaultDataRoot();
   const mode = getDeployMode();
-  if (!mode) return path.join(__dirname, 'data', 'instances');
-  return path.join(__dirname, mode, 'data', 'instances');
+  if (!mode) return path.join(root, 'data', 'instances');
+  return path.join(root, mode, 'data', 'instances');
 }
 
 function safeLabel(label) {
@@ -563,7 +593,16 @@ async function emitEvent(type, payload, idempotencyKey = '', taskId = '') {
 }
 
 function runLegacyHook(type) {
-  const legacyScript = path.join(__dirname, '..', 'Claude-Code-Remote', 'claude-hook-notify.js');
+  const remotePath = getRemotePath();
+  if (!remotePath) {
+    console.warn('[agent] Claude-Code-Remote not found, skipping legacy hook');
+    return 0;
+  }
+  const legacyScript = path.join(remotePath, 'claude-hook-notify.js');
+  if (!fs.existsSync(legacyScript)) {
+    console.warn(`[agent] Legacy hook script not found: ${legacyScript}, skipping`);
+    return 0;
+  }
   const result = spawnSync('node', [legacyScript, type], {
     stdio: 'inherit',
     env: process.env,
@@ -1245,7 +1284,6 @@ async function promptForWorkConfig() {
     console.log('   - Or use "request-session" from dashboard to trigger auto-setup.');
     console.log('---------------------------------');
 
-    const choice = await question('Enter your choice (1, 2, or 3): ');
     let tmuxTarget = null;
 
     if (choice === '1') {
@@ -2360,8 +2398,10 @@ async function startWorkLoop(channels, initialTarget) {
 async function main() {
   // Best-effort: load Coordinator config from existing Claude-Code-Remote .env
   // so that hooks can work without requiring users to export env vars manually.
-  const repoRoot = path.resolve(__dirname, '..');
-  loadDotEnvIfPresent(path.join(repoRoot, 'Claude-Code-Remote', '.env'));
+  const remotePath = getRemotePath();
+  if (remotePath) {
+    loadDotEnvIfPresent(path.join(remotePath, '.env'));
+  }
 
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd) {
@@ -2441,7 +2481,12 @@ async function main() {
   }
 
   if (cmd === 'run') {
-    const legacyDir = path.join(repoRoot, 'Claude-Code-Remote');
+    const legacyDir = getRemotePath();
+    if (!legacyDir) {
+      console.error('[agent] Claude-Code-Remote not found. The "run" command requires it for webhook services.');
+      console.error('[agent] Set CLAUDE_CODE_REMOTE_PATH or install from the monorepo.');
+      process.exit(1);
+    }
     const legacyEntrypoint = path.join(legacyDir, 'start-all-webhooks.js');
 
     if (!fs.existsSync(legacyEntrypoint)) {
