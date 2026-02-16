@@ -75,3 +75,12 @@ docker buildx build \
   "$BUILD_CONTEXT"
 
 echo "✅ Build & push completed successfully"
+
+##########################################
+# 6. publish clw-agent to npm
+# ########################################
+echo "npm publish start"
+
+echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" >> ~/.npmrc
+
+npm --prefix .. publish --workspace=@clwclw-monitor/agent --access public
