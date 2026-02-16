@@ -8,22 +8,34 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <div class="brand-title">clwclw-monitor</div>
-        <div class="brand-sub">Coordinator Dashboard (MVP)</div>
+      <div class="topbar-left">
+        <a href="/" class="brand-title">clwclw<span class="brand-dot">.</span>monitor</a>
+        <nav class="topbar-nav">
+          <a href="#" class="topbar-nav-link active" data-section="dashboard" onclick="event.preventDefault();showSection('dashboard')">Dashboard</a>
+          <a href="#" class="topbar-nav-link" data-section="setup" onclick="event.preventDefault();showSection('setup')">Setup Guide</a>
+        </nav>
       </div>
-      <div class="topbar-actions">
-        <span id="userInfo" class="muted" style="font-size:13px;font-weight:600;"></span>
-        <button id="refreshBtn" class="btn">Refresh</button>
-        <label class="toggle">
+      <div class="topbar-right">
+        <span id="userInfo" class="topbar-user"></span>
+        <div class="topbar-divider"></div>
+        <label class="topbar-toggle">
           <input id="autoRefresh" type="checkbox" checked />
-          <span>Auto refresh</span>
+          <span>Auto</span>
         </label>
-        <button id="logoutBtn" class="btn" style="color:var(--danger);">Logout</button>
+        <button id="refreshBtn" class="topbar-icon-btn" title="Refresh">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </button>
+        <a href="https://github.com/WithFortuna/clwclw-monitor" target="_blank" rel="noopener" class="topbar-icon-btn" title="GitHub">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <button id="logoutBtn" class="topbar-icon-btn" title="Logout" style="color:var(--danger);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
       </div>
     </header>
 
-    <main class="container">
+    <!-- ===== DASHBOARD SECTION ===== -->
+    <main id="sectionDashboard" class="container">
       <section class="grid">
         <div class="card card-compact">
           <div class="card-title">Agents</div>
@@ -127,6 +139,113 @@
       </section>
     </main>
 
+    <!-- ===== SETUP GUIDE SECTION ===== -->
+    <main id="sectionSetup" class="container" style="display:none;">
+      <div class="setup-page">
+        <div class="setup-hero">
+          <h1 class="setup-page-title">Agent Setup Guide</h1>
+          <p class="setup-page-desc">Claude Code 세션을 Coordinator에 연결하는 방법을 안내합니다.</p>
+        </div>
+
+        <div class="setup-page-grid">
+          <!-- Step 1 -->
+          <div class="setup-page-card">
+            <div class="setup-page-card-header">
+              <div class="setup-step-num">1</div>
+              <h2>Install</h2>
+            </div>
+            <p>npm으로 Agent를 전역 설치합니다. Node.js 14 이상이 필요합니다.</p>
+            <div class="setup-cmd" onclick="copySetupCmd(this,'npm i -g @clwclw-monitor/agent')">
+              <span class="setup-prompt">$</span>
+              <code>npm i -g @clwclw-monitor/agent</code>
+              <span class="setup-copy-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </span>
+            </div>
+            <div class="setup-note">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              <span>설치 후 <code>clw-agent --help</code>로 사용 가능한 명령어를 확인하세요.</span>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="setup-page-card">
+            <div class="setup-page-card-header">
+              <div class="setup-step-num">2</div>
+              <h2>Connect</h2>
+            </div>
+            <p>Agent를 실행하면 브라우저 인증 창이 열리고, 로그인 후 자동으로 Coordinator에 등록됩니다.</p>
+            <div class="setup-cmd" onclick="copySetupCmd(this,'clw-agent work --url https://your-coordinator.com --channel backend')">
+              <span class="setup-prompt">$</span>
+              <code>clw-agent work --url https://your-coordinator.com --channel backend</code>
+              <span class="setup-copy-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </span>
+            </div>
+            <div class="setup-options">
+              <div class="setup-option">
+                <code>--url</code>
+                <span>Coordinator 서버 주소</span>
+              </div>
+              <div class="setup-option">
+                <code>--channel</code>
+                <span>구독할 채널 이름 (쉼표로 복수 지정 가능)</span>
+              </div>
+              <div class="setup-option">
+                <code>--name</code>
+                <span>Agent 표시 이름 (기본: hostname)</span>
+              </div>
+              <div class="setup-option">
+                <code>--tmux-target</code>
+                <span>tmux 세션:창.패인 (예: claude:0.0)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="setup-page-card">
+            <div class="setup-page-card-header">
+              <div class="setup-step-num">3</div>
+              <h2>Work</h2>
+            </div>
+            <p>Agent가 연결되면 Dashboard의 Agents 패널에 표시됩니다. 이제 Task Board에서 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
+            <div class="setup-feature-list">
+              <div class="setup-feature">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Heartbeat로 실시간 상태 모니터링</span>
+              </div>
+              <div class="setup-feature">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>FIFO 기반 자동 작업 분배</span>
+              </div>
+              <div class="setup-feature">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>tmux를 통한 원격 명령 주입</span>
+              </div>
+              <div class="setup-feature">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>Chain 기반 순차 실행</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setup-page-footer">
+          <a href="https://www.npmjs.com/package/@clwclw-monitor/agent" target="_blank" rel="noopener" class="setup-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M0 7.334v8h6.666v1.332H12v-1.332h12v-8H0zm6.666 6.664H5.334v-4H3.999v4H1.335V8.667h5.331v5.331zm4 0h-2.666V8.667h2.666v5.331zm12 0h-1.333v-4h-1.334v4h-1.333v-4h-1.334v4h-1.333V8.667h6.667v5.331z"/></svg>
+            npm package
+          </a>
+          <a href="https://github.com/WithFortuna/clwclw-monitor" target="_blank" rel="noopener" class="setup-link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            GitHub
+          </a>
+          <button class="btn primary" onclick="showSection('dashboard')" style="margin-left:auto;">
+            Go to Dashboard
+          </button>
+        </div>
+      </div>
+    </main>
+
     <div id="promptModal" class="modal hidden" role="dialog" aria-modal="true">
       <div class="modal-backdrop" data-action="close-modal"></div>
       <div class="modal-card">
@@ -173,6 +292,33 @@
       <div>Polling-based MVP. Real-time (SSE/WS/Supabase Realtime) will come later.</div>
     </footer>
 
+    <script>
+      function showSection(name, pushHistory) {
+        document.getElementById('sectionDashboard').style.display = name === 'dashboard' ? '' : 'none';
+        document.getElementById('sectionSetup').style.display = name === 'setup' ? '' : 'none';
+        document.querySelectorAll('.topbar-nav-link').forEach(link => {
+          link.classList.toggle('active', link.dataset.section === name);
+        });
+        if (pushHistory !== false) {
+          history.pushState({ section: name }, '', name === 'setup' ? '#setup' : '#dashboard');
+        }
+      }
+      window.addEventListener('popstate', function(e) {
+        var section = (e.state && e.state.section) || (location.hash === '#setup' ? 'setup' : 'dashboard');
+        showSection(section, false);
+      });
+      (function() {
+        if (location.hash === '#setup') showSection('setup', false);
+        else history.replaceState({ section: 'dashboard' }, '', '#dashboard');
+      })();
+      function copySetupCmd(el, cmd) {
+        navigator.clipboard.writeText(cmd).then(() => {
+          const icon = el.querySelector('.setup-copy-icon');
+          icon.style.color = 'var(--ok)';
+          setTimeout(() => icon.style.color = '', 1500);
+        });
+      }
+    </script>
     <script src="/app.js"></script>
   </body>
 </html>

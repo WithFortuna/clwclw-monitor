@@ -107,132 +107,6 @@
         transform: translateY(-2px);
       }
 
-      /* ---- TERMINAL INSTALL ---- */
-      .hero-terminal {
-        margin-top: 40px;
-        display: inline-flex; align-items: center; gap: 12px;
-        background: #1a1d27;
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 12px;
-        padding: 14px 20px;
-        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-        font-size: 15px;
-        color: rgba(255,255,255,0.85);
-        cursor: pointer;
-        transition: all 0.25s ease;
-        position: relative;
-        max-width: 100%;
-      }
-      .hero-terminal:hover {
-        border-color: rgba(49,130,246,0.4);
-        box-shadow: 0 4px 24px rgba(49,130,246,0.15);
-        transform: translateY(-2px);
-      }
-      .hero-terminal .term-prompt {
-        color: var(--blue);
-        font-weight: 600;
-        user-select: none;
-        flex-shrink: 0;
-      }
-      .hero-terminal .term-cmd { white-space: nowrap; }
-      .hero-terminal .term-copy {
-        flex-shrink: 0;
-        width: 32px; height: 32px;
-        display: flex; align-items: center; justify-content: center;
-        border-radius: 8px;
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(255,255,255,0.08);
-        color: rgba(255,255,255,0.5);
-        transition: all 0.2s;
-      }
-      .hero-terminal:hover .term-copy {
-        color: rgba(255,255,255,0.8);
-        background: rgba(255,255,255,0.1);
-      }
-      .hero-terminal .term-copied {
-        position: absolute;
-        top: -36px; left: 50%;
-        transform: translateX(-50%);
-        background: #1a1d27;
-        color: #3ddc97;
-        font-size: 13px; font-weight: 600;
-        padding: 6px 14px;
-        border-radius: 8px;
-        border: 1px solid rgba(61,220,151,0.3);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.2s;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      }
-      .hero-terminal .term-copied.show { opacity: 1; }
-
-      /* ---- QUICK START ---- */
-      .quickstart {
-        padding: 120px 24px;
-        background: var(--section-bg);
-      }
-      .quickstart-inner {
-        max-width: 800px; margin: 0 auto;
-      }
-      .quickstart .section-label { text-align: center; }
-      .quickstart .section-title { text-align: center; }
-      .quickstart .section-desc { text-align: center; margin: 0 auto 64px; }
-      .qs-steps {
-        display: flex; flex-direction: column; gap: 32px;
-      }
-      .qs-step {
-        display: flex; gap: 20px; align-items: flex-start;
-      }
-      .qs-num {
-        flex-shrink: 0;
-        width: 36px; height: 36px;
-        border-radius: 10px;
-        background: var(--blue);
-        color: #fff;
-        font-size: 16px; font-weight: 800;
-        display: flex; align-items: center; justify-content: center;
-      }
-      .qs-content { flex: 1; min-width: 0; }
-      .qs-content h3 {
-        font-size: 18px; font-weight: 750;
-        margin-bottom: 8px; letter-spacing: -0.3px;
-      }
-      .qs-content p {
-        font-size: 15px; color: var(--text-sub); line-height: 1.6;
-        font-weight: 500; margin-bottom: 12px;
-      }
-      .qs-code {
-        display: flex; align-items: center; gap: 10px;
-        background: #1a1d27;
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 10px;
-        padding: 12px 16px;
-        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
-        font-size: 14px;
-        color: rgba(255,255,255,0.85);
-        overflow-x: auto;
-        cursor: pointer;
-        transition: border-color 0.2s;
-      }
-      .qs-code:hover {
-        border-color: rgba(49,130,246,0.3);
-      }
-      .qs-code .term-prompt {
-        color: var(--blue); font-weight: 600; user-select: none; flex-shrink: 0;
-      }
-      .qs-code code { white-space: nowrap; }
-      .qs-code .qs-copy {
-        flex-shrink: 0; margin-left: auto;
-        color: rgba(255,255,255,0.35);
-        transition: color 0.2s;
-      }
-      .qs-code:hover .qs-copy { color: rgba(255,255,255,0.7); }
-      .qs-divider {
-        width: 2px; height: 24px;
-        background: linear-gradient(180deg, var(--blue), transparent);
-        margin-left: 17px;
-      }
-
       /* ---- FEATURES ---- */
       .features {
         padding: 120px 24px;
@@ -461,13 +335,10 @@
       @media (max-width: 768px) {
         .nav { padding: 0 20px; }
         .nav-link { display: none; }
-        .features-grid, .security-grid {
+        .features-grid, .steps, .security-grid {
           grid-template-columns: 1fr;
         }
         .hero { padding: 100px 20px 60px; }
-        .hero-terminal { font-size: 13px; padding: 12px 16px; }
-        .qs-code { font-size: 12px; }
-        .qs-code code { font-size: 12px; }
         .auth-card { padding: 36px 24px; }
       }
     </style>
@@ -479,7 +350,7 @@
       <div class="nav-logo">clwclw<span>.</span>monitor</div>
       <div class="nav-actions">
         <a href="#features" class="nav-link">Features</a>
-        <a href="#quickstart" class="nav-link">Quick Start</a>
+        <a href="#how" class="nav-link">How it works</a>
         <a href="#security" class="nav-link">Security</a>
         <button class="nav-btn" onclick="openAuth('login')">Login</button>
       </div>
@@ -500,17 +371,9 @@
         <button class="btn-large btn-primary" onclick="openAuth('register')">
           Get Started
         </button>
-        <button class="btn-large btn-outline" onclick="document.getElementById('quickstart').scrollIntoView({behavior:'smooth'})">
-          Install Agent
+        <button class="btn-large btn-outline" onclick="document.getElementById('features').scrollIntoView({behavior:'smooth'})">
+          Learn More
         </button>
-      </div>
-      <div class="hero-terminal" onclick="copyInstall(this)" role="button" tabindex="0" aria-label="Copy install command">
-        <span class="term-prompt">$</span>
-        <span class="term-cmd">npm i -g @clwclw-monitor/agent</span>
-        <span class="term-copy">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        </span>
-        <span class="term-copied">Copied!</span>
       </div>
     </section>
 
@@ -560,53 +423,28 @@
       </div>
     </section>
 
-    <!-- QUICK START -->
-    <section class="quickstart" id="quickstart">
-      <div class="quickstart-inner">
-        <div class="section-label fade-up">QUICK START</div>
+    <!-- HOW IT WORKS -->
+    <section class="how" id="how">
+      <div class="how-inner">
+        <div class="section-label fade-up">HOW IT WORKS</div>
         <h2 class="section-title fade-up">
-          3분이면 충분합니다
+          세 단계로 시작하세요
         </h2>
-        <p class="section-desc fade-up">
-          Agent를 설치하고, Coordinator에 연결하고, 작업을 시작하세요.
-        </p>
-        <div class="qs-steps">
-          <div class="qs-step fade-up">
-            <div class="qs-num">1</div>
-            <div class="qs-content">
-              <h3>Agent 설치</h3>
-              <p>npm으로 전역 설치합니다. Claude Code가 설치된 모든 머신에서 실행 가능합니다.</p>
-              <div class="qs-code" onclick="copyCmd(this, 'npm i -g @clwclw-monitor/agent')">
-                <span class="term-prompt">$</span>
-                <code>npm i -g @clwclw-monitor/agent</code>
-                <span class="qs-copy">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                </span>
-              </div>
-            </div>
+        <div class="steps">
+          <div class="step fade-up">
+            <div class="step-number">01</div>
+            <h3>Coordinator 시작</h3>
+            <p>Go 서버를 실행하면 대시보드와 API가 즉시 활성화됩니다. Docker로 한 줄이면 충분합니다.</p>
           </div>
-          <div class="qs-divider"></div>
-          <div class="qs-step fade-up">
-            <div class="qs-num">2</div>
-            <div class="qs-content">
-              <h3>Coordinator에 연결</h3>
-              <p>Agent를 실행하면 자동으로 Coordinator에 등록됩니다. 대시보드에서 바로 확인하세요.</p>
-              <div class="qs-code" onclick="copyCmd(this, 'clw-agent work --url https://your-coordinator.com --channel backend')">
-                <span class="term-prompt">$</span>
-                <code>clw-agent work --url https://your-coordinator.com --channel backend</code>
-                <span class="qs-copy">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                </span>
-              </div>
-            </div>
+          <div class="step fade-up">
+            <div class="step-number">02</div>
+            <h3>Agent 연결</h3>
+            <p>각 Claude Code 세션에서 Agent를 실행하면 자동으로 Coordinator에 등록됩니다.</p>
           </div>
-          <div class="qs-divider"></div>
-          <div class="qs-step fade-up">
-            <div class="qs-num">3</div>
-            <div class="qs-content">
-              <h3>작업 분배 시작</h3>
-              <p>대시보드에서 채널과 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
-            </div>
+          <div class="step fade-up">
+            <div class="step-number">03</div>
+            <h3>작업 관리</h3>
+            <p>대시보드에서 채널과 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
           </div>
         </div>
       </div>
@@ -644,21 +482,11 @@
       <div class="cta-inner">
         <h2 class="fade-up">지금 시작하세요</h2>
         <p class="fade-up">
-          Agent를 설치하고, 여러 Claude Code 세션을 하나로 관리해 보세요.
+          무료로 계정을 만들고 Claude Code Agent를 관리해 보세요.
         </p>
-        <div class="hero-cta fade-up" style="margin-bottom: 32px;">
-          <button class="btn-large btn-primary" onclick="openAuth('register')">
-            Sign up for free
-          </button>
-        </div>
-        <div class="hero-terminal fade-up" onclick="copyInstall(this)" role="button" tabindex="0" aria-label="Copy install command" style="margin-top: 0;">
-          <span class="term-prompt">$</span>
-          <span class="term-cmd">npm i -g @clwclw-monitor/agent</span>
-          <span class="term-copy">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          </span>
-          <span class="term-copied">Copied!</span>
-        </div>
+        <button class="btn-large btn-primary fade-up" onclick="openAuth('register')">
+          Sign up for free
+        </button>
       </div>
     </section>
 
@@ -712,23 +540,6 @@
     </div>
 
     <script>
-      // --- Copy install command ---
-      function copyInstall(el) {
-        navigator.clipboard.writeText('npm i -g @clwclw-monitor/agent').then(() => {
-          const tip = el.querySelector('.term-copied');
-          tip.classList.add('show');
-          setTimeout(() => tip.classList.remove('show'), 1500);
-        });
-      }
-
-      function copyCmd(el, cmd) {
-        navigator.clipboard.writeText(cmd).then(() => {
-          const svg = el.querySelector('.qs-copy');
-          svg.style.color = '#3ddc97';
-          setTimeout(() => svg.style.color = '', 1500);
-        });
-      }
-
       // --- Scroll animation ---
       const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
