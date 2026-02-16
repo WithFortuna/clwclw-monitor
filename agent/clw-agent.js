@@ -1285,27 +1285,32 @@ async function promptForWorkConfig() {
     console.log('---------------------------------');
 
     let tmuxTarget = null;
+    while (true) {
+      const choice = (await question('Enter your choice (1, 2, or 3): ')).trim();
 
-    if (choice === '1') {
-      const defaultSessionName = `claude-agent-session-${Date.now()}`;
-      const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
-      const sessionName = sessionNameInput.trim() || defaultSessionName;
-      createTmuxSessionAndStartClaudeCode(sessionName, 'claude');
-      tmuxTarget = sessionName;
-    } else if (choice === '2') {
-      console.log('\nPlease start your tmux session and Claude Code now.');
-      const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
-      if (!manualTarget.trim()) {
-        console.error('Tmux target cannot be empty for Manual Mode.');
-        return null;
+      if (choice === '1') {
+        const defaultSessionName = `claude-agent-session-${Date.now()}`;
+        const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
+        const sessionName = sessionNameInput.trim() || defaultSessionName;
+        createTmuxSessionAndStartClaudeCode(sessionName, 'claude');
+        tmuxTarget = sessionName;
+        break;
+      } else if (choice === '2') {
+        console.log('\nPlease start your tmux session and Claude Code now.');
+        const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
+        if (!manualTarget.trim()) {
+          console.error('Tmux target cannot be empty for Manual Mode.');
+          return null;
+        }
+        tmuxTarget = manualTarget.trim();
+        break;
+      } else if (choice === '3') {
+        console.log('[agent] Tmux setup skipped. Will be configured when a task arrives.');
+        tmuxTarget = null;
+        break;
+      } else {
+        console.error('Invalid choice. Please enter 1, 2, or 3.');
       }
-      tmuxTarget = manualTarget.trim();
-    } else if (choice === '3') {
-      console.log('[agent] Tmux setup skipped. Will be configured when a task arrives.');
-      tmuxTarget = null;
-    } else {
-      console.error('Invalid choice. Please enter 1, 2, or 3.');
-      return null;
     }
 
     return { channels: selectedChannels, tmuxTarget };
@@ -1958,25 +1963,30 @@ async function promptForRunMode() {
     console.log('   - The agent will connect to your existing session.');
     console.log('---------------------------------');
 
-    const choice = await question('Enter your choice (1 or 2): ');
     let target = null;
+    while (true) {
+      const choice = (await question('Enter your choice (1 or 2): ')).trim();
 
-    if (choice === '1') {
-      const defaultSessionName = `claude-agent-session-${Date.now()}`;
-      const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
-      const sessionName = sessionNameInput.trim() || defaultSessionName;
-      const claudeCommand = 'claude'; // This could be made configurable.
-      createTmuxSessionAndStartClaudeCode(sessionName, claudeCommand);
-      target = sessionName;
-    } else if (choice === '2') {
-      console.log('\nPlease start your tmux session and Claude Code now.');
-      const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
-      if (!manualTarget) {
-        console.error('Tmux target cannot be empty for Manual Mode.');
+      if (choice === '1') {
+        const defaultSessionName = `claude-agent-session-${Date.now()}`;
+        const sessionNameInput = await question(`Enter a name for the new tmux session (default: ${defaultSessionName}): `);
+        const sessionName = sessionNameInput.trim() || defaultSessionName;
+        const claudeCommand = 'claude'; // This could be made configurable.
+        createTmuxSessionAndStartClaudeCode(sessionName, claudeCommand);
+        target = sessionName;
+        break;
+      } else if (choice === '2') {
+        console.log('\nPlease start your tmux session and Claude Code now.');
+        const manualTarget = await question('Enter the tmux target to connect to (e.g., session:window.pane or just session): ');
+        if (!manualTarget.trim()) {
+          console.error('Tmux target cannot be empty for Manual Mode.');
+          return null;
+        }
+        target = manualTarget.trim();
+        break;
+      } else {
+        console.error('Invalid choice. Please enter 1 or 2.');
       }
-      target = manualTarget;
-    } else {
-      console.error('Invalid choice. Please enter 1 or 2.');
     }
     return target;
   } finally {
@@ -2592,22 +2602,22 @@ async function main() {
       console.log(`[agent] Using mode: ${mode}`);
     }
 
-    // For prod mode, prompt for COORDINATOR_URL if not set via env
-    if (mode === 'prod' && !(process.env.COORDINATOR_URL || '').trim()) {
-      const url = await readUserInput('  Coordinator URL: ');
-      if (url.trim()) {
-        const dir = modeDataDir();
-        ensureDir(dir);
-        fs.writeFileSync(path.join(dir, 'coordinator-url.txt'), url.trim() + '\n', 'utf8');
-        console.log(`[agent] Coordinator URL saved to ${path.join(dir, 'coordinator-url.txt')}`);
+    // Determine and persist Coordinator URL based on mode
+    {
+      let resolvedUrl;
+      if (mode === 'prod') {
+        resolvedUrl = 'https://clwclw-monitor.cloud';
+      } else {
+        const portInput = await readUserInput('  Coordinator port (default 8080): ');
+        const port = (portInput.trim() || '8080');
+        resolvedUrl = `http://localhost:${port}`;
       }
-    }
-
-    // For local mode, persist default localhost URL
-    if (mode === 'local') {
       const dir = modeDataDir();
       ensureDir(dir);
-      fs.writeFileSync(path.join(dir, 'coordinator-url.txt'), 'http://localhost:8080\n', 'utf8');
+      fs.writeFileSync(path.join(dir, 'coordinator-url.txt'), resolvedUrl + '\n', 'utf8');
+      // Override env so coordinatorBaseUrl() uses the login-selected URL
+      process.env.COORDINATOR_URL = resolvedUrl;
+      console.log(`[agent] Coordinator URL: ${resolvedUrl}`);
     }
 
     try {
