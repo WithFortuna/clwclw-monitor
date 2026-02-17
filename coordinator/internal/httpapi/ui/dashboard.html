@@ -3,7 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>clwclw-monitor</title>
+    <title>clwclw.monitor - Claude Code Orchestrator</title>
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta property="og:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta property="og:image" content="/og-image.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta name="twitter:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta name="twitter:image" content="/og-image.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -172,33 +184,19 @@
           <div class="setup-page-card">
             <div class="setup-page-card-header">
               <div class="setup-step-num">2</div>
-              <h2>Connect</h2>
+              <h2>Setup</h2>
             </div>
-            <p>Agent를 실행하면 브라우저 인증 창이 열리고, 로그인 후 자동으로 Coordinator에 등록됩니다.</p>
-            <div class="setup-cmd" onclick="copySetupCmd(this,'clw-agent work --url https://your-coordinator.com --channel backend')">
+            <p>알림 채널(Telegram, Email, LINE)과 Claude Code 훅을 대화형 위저드로 설정합니다.</p>
+            <div class="setup-cmd" onclick="copySetupCmd(this,'clw-agent setup')">
               <span class="setup-prompt">$</span>
-              <code>clw-agent work --url https://your-coordinator.com --channel backend</code>
+              <code>clw-agent setup</code>
               <span class="setup-copy-icon">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </span>
             </div>
-            <div class="setup-options">
-              <div class="setup-option">
-                <code>--url</code>
-                <span>Coordinator 서버 주소</span>
-              </div>
-              <div class="setup-option">
-                <code>--channel</code>
-                <span>구독할 채널 이름 (쉼표로 복수 지정 가능)</span>
-              </div>
-              <div class="setup-option">
-                <code>--name</code>
-                <span>Agent 표시 이름 (기본: hostname)</span>
-              </div>
-              <div class="setup-option">
-                <code>--tmux-target</code>
-                <span>tmux 세션:창.패인 (예: claude:0.0)</span>
-              </div>
+            <div class="setup-note">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              <span>알림이 필요 없다면 이 단계를 건너뛸 수 있습니다.</span>
             </div>
           </div>
 
@@ -206,9 +204,16 @@
           <div class="setup-page-card">
             <div class="setup-page-card-header">
               <div class="setup-step-num">3</div>
-              <h2>Work</h2>
+              <h2>Login</h2>
             </div>
-            <p>Agent가 연결되면 Dashboard의 Agents 패널에 표시됩니다. 이제 Task Board에서 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
+            <p>Coordinator에 인증하고 Agent를 등록합니다. 대시보드에서 바로 확인하세요.</p>
+            <div class="setup-cmd" onclick="copySetupCmd(this,'clw-agent login')">
+              <span class="setup-prompt">$</span>
+              <code>clw-agent login</code>
+              <span class="setup-copy-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </span>
+            </div>
             <div class="setup-feature-list">
               <div class="setup-feature">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

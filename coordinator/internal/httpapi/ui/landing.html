@@ -3,7 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>clwclw-monitor</title>
+    <title>clwclw.monitor - Claude Code Orchestrator</title>
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta property="og:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta property="og:image" content="/og-image.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta name="twitter:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta name="twitter:image" content="/og-image.png" />
     <style>
       :root {
         --bg: #ffffff;
@@ -40,7 +52,7 @@
       }
       .nav-logo {
         font-size: 20px; font-weight: 800; color: var(--text);
-        letter-spacing: -0.5px;
+        letter-spacing: -0.5px; text-decoration: none; cursor: pointer;
       }
       .nav-logo span { color: var(--blue); }
       .nav-actions { display: flex; gap: 12px; align-items: center; }
@@ -497,7 +509,7 @@
 
     <!-- NAV -->
     <nav class="nav">
-      <div class="nav-logo">clwclw<span>.</span>monitor</div>
+      <a href="#" class="nav-logo" onclick="window.scrollTo({top:0,behavior:'smooth'});return false;">clwclw<span>.</span>monitor</a>
       <div class="nav-actions">
         <a href="#features" class="nav-link">Features</a>
         <a href="#quickstart" class="nav-link">Quick Start</a>
@@ -605,11 +617,11 @@
           <div class="qs-step fade-up">
             <div class="qs-num">2</div>
             <div class="qs-content">
-              <h3>Coordinator에 연결</h3>
-              <p>Agent를 실행하면 자동으로 Coordinator에 등록됩니다. 대시보드에서 바로 확인하세요.</p>
-              <div class="qs-code" onclick="copyCmd(this, 'clw-agent work --url https://your-coordinator.com --channel backend')">
+              <h3>알림 & 훅 설정</h3>
+              <p>알림 채널(Telegram, Email, LINE)과 Claude Code 훅을 대화형 위저드로 설정합니다.</p>
+              <div class="qs-code" onclick="copyCmd(this, 'clw-agent setup')">
                 <span class="term-prompt">$</span>
-                <code>clw-agent work --url https://your-coordinator.com --channel backend</code>
+                <code>clw-agent setup</code>
                 <span class="qs-copy">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 </span>
@@ -620,8 +632,15 @@
           <div class="qs-step fade-up">
             <div class="qs-num">3</div>
             <div class="qs-content">
-              <h3>작업 분배 시작</h3>
-              <p>대시보드에서 채널과 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
+              <h3>Coordinator에 로그인</h3>
+              <p>Coordinator에 인증하고 Agent를 등록합니다. 대시보드에서 바로 확인하세요.</p>
+              <div class="qs-code" onclick="copyCmd(this, 'clw-agent login')">
+                <span class="term-prompt">$</span>
+                <code>clw-agent login</code>
+                <span class="qs-copy">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </span>
+              </div>
             </div>
           </div>
         </div>
