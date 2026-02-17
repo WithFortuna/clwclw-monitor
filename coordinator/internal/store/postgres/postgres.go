@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -994,8 +994,7 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 
 		// If agent has a current_task_id, it must match the task being completed
 		if currentTaskID != "" && currentTaskID != req.TaskID {
-			log.Printf("[store] CompleteTask rejected: agent %s current_task_id=%s != request task_id=%s",
-				agentID, currentTaskID, req.TaskID)
+			slog.Warn("CompleteTask rejected: current_task_id mismatch", "agent_id", agentID, "current_task_id", currentTaskID, "request_task_id", req.TaskID)
 			return nil, store.ErrConflict
 		}
 	}
@@ -1076,13 +1075,11 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 			}
 
 			if strings.TrimSpace(req.AgentID) != "" && existing.AssignedAgentID != strings.TrimSpace(req.AgentID) {
-				log.Printf("[store] CompleteTask rejected: UPDATE returned 0 rows - request agent_id=%s != task assigned_agent_id=%s (task_id=%s, status=%s)",
-					req.AgentID, existing.AssignedAgentID, req.TaskID, existing.Status)
+				slog.Warn("CompleteTask rejected: agent mismatch", "request_agent_id", req.AgentID, "assigned_agent_id", existing.AssignedAgentID, "task_id", req.TaskID, "status", existing.Status)
 				return nil, store.ErrConflict
 			}
 			if existing.Status != model.TaskStatusDone {
-				log.Printf("[store] CompleteTask rejected: UPDATE returned 0 rows - task status=%s (not in_progress, task_id=%s)",
-					existing.Status, req.TaskID)
+				slog.Warn("CompleteTask rejected: invalid task status", "status", existing.Status, "task_id", req.TaskID)
 				return nil, store.ErrConflict
 			}
 			t = existing
