@@ -141,7 +141,7 @@ func (s *Store) CreateChannel(_ context.Context, ch model.Channel) (model.Channe
 	}
 
 	for _, existing := range s.channels {
-		if strings.EqualFold(existing.Name, ch.Name) {
+		if strings.EqualFold(existing.Name, ch.Name) && existing.UserID == ch.UserID {
 			return model.Channel{}, store.ErrConflict
 		}
 	}

@@ -65,17 +65,18 @@ comment on column public.agents.status is
   'DEPRECATED: Legacy status field. Use claude_status for Claude execution state and derive worker status from last_seen.';
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Channels (0001, unique name already in DDL)
+-- Channels (0001, composite unique on name+user_id per 0017)
 -- ─────────────────────────────────────────────────────────────────────────────
 create table if not exists public.channels (
   id uuid primary key default gen_random_uuid(),
   user_id uuid null references public.users(id),
-  name text not null unique,
+  name text not null,
   description text null,
   created_at timestamptz not null default now()
 );
 
 create index if not exists idx_channels_user_id on public.channels (user_id);
+create unique index if not exists uq_channels_name_user on public.channels (name, user_id);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Chains (0004, using set_updated_at instead of moddatetime)
