@@ -15,14 +15,16 @@ import (
 type Store struct {
 	mu sync.Mutex
 
-	agents    map[string]model.Agent
-	channels  map[string]model.Channel
-	chains    map[string]model.Chain
-	tasks     map[string]model.Task
-	events    map[string]model.Event
-	inputs    map[string]model.TaskInput
-	users     map[string]model.User
-	authCodes map[string]model.AuthCode
+	agents       map[string]model.Agent
+	channels     map[string]model.Channel
+	chains       map[string]model.Chain
+	tasks        map[string]model.Task
+	events       map[string]model.Event
+	inputs       map[string]model.TaskInput
+	users        map[string]model.User
+	authCodes    map[string]model.AuthCode
+	accessTokens map[string]model.AccessToken // id → token
+	tokenHashes  map[string]string            // tokenHash → id
 
 	claimIdem map[string]string
 	inputIdem map[string]string
@@ -33,17 +35,19 @@ type Store struct {
 
 func NewStore() *Store {
 	return &Store{
-		agents:    make(map[string]model.Agent),
-		channels:  make(map[string]model.Channel),
-		chains:    make(map[string]model.Chain),
-		tasks:     make(map[string]model.Task),
-		events:    make(map[string]model.Event),
-		inputs:    make(map[string]model.TaskInput),
-		users:     make(map[string]model.User),
-		authCodes: make(map[string]model.AuthCode),
-		claimIdem: make(map[string]string),
-		inputIdem: make(map[string]string),
-		idem:      make(map[string]struct{}),
+		agents:       make(map[string]model.Agent),
+		channels:     make(map[string]model.Channel),
+		chains:       make(map[string]model.Chain),
+		tasks:        make(map[string]model.Task),
+		events:       make(map[string]model.Event),
+		inputs:       make(map[string]model.TaskInput),
+		users:        make(map[string]model.User),
+		authCodes:    make(map[string]model.AuthCode),
+		accessTokens: make(map[string]model.AccessToken),
+		tokenHashes:  make(map[string]string),
+		claimIdem:    make(map[string]string),
+		inputIdem:    make(map[string]string),
+		idem:         make(map[string]struct{}),
 	}
 }
 

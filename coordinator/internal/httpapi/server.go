@@ -76,5 +76,13 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/v1/stream", s.handleStream)
 	s.mux.HandleFunc("/v1/dashboard", s.handleDashboard)
 
+	// Access token management (JWT auth — standard authMiddleware applies)
+	s.mux.HandleFunc("/v1/access-tokens", s.handleAccessTokens)
+	s.mux.HandleFunc("DELETE /v1/access-tokens/{id}", s.handleRevokeAccessToken)
+
+	// External API (access token auth — per-route middleware, bypasses JWT authMiddleware)
+	s.mux.Handle("POST /v1/external/tasks",
+		externalAuthMiddleware(s.store, http.HandlerFunc(s.handleExternalCreateTask)))
+
 	s.registerUI()
 }

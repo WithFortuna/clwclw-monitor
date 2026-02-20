@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"clwclw-monitor/coordinator/internal/config"
+	"clwclw-monitor/coordinator/internal/store"
 )
 
 const requestIDHeader = "X-Request-Id"
@@ -67,6 +69,12 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 
 		// Allow auth endpoints without auth (register, login, agent-token).
 		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// External API uses its own access token auth middleware per-route.
+		if strings.HasPrefix(r.URL.Path, "/v1/external/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -133,4 +141,46 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
 	})
+}
+
+const ctxTokenID contextKey = "token_id"
+const ctxTokenScopes contextKey = "token_scopes"
+
+func externalAuthMiddleware(st store.Store, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing access token")
+			return
+		}
+		rawToken := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+		if rawToken == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing access token")
+			return
+		}
+
+		hashBytes := sha256.Sum256([]byte(rawToken))
+		tokenHash := hex.EncodeToString(hashBytes[:])
+
+		token, err := st.ValidateAccessToken(r.Context(), tokenHash)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or revoked access token")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxUserID, token.UserID)
+		ctx = context.WithValue(ctx, ctxTokenID, token.ID)
+		ctx = context.WithValue(ctx, ctxTokenScopes, token.Scopes)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func contextHasScope(ctx context.Context, scope string) bool {
+	scopes, _ := ctx.Value(ctxTokenScopes).([]string)
+	for _, s := range scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
 }

@@ -110,4 +110,14 @@ type Store interface {
 
 	CreateAuthCode(ctx context.Context, code model.AuthCode) error
 	ConsumeAuthCode(ctx context.Context, code string) (*model.AuthCode, error)
+
+	// Access token management (M2M authentication for external services)
+	CreateAccessToken(ctx context.Context, t model.AccessToken) (model.AccessToken, error)
+	ListAccessTokens(ctx context.Context, userID string) ([]model.AccessToken, error)
+	RevokeAccessToken(ctx context.Context, tokenID string, userID string) error
+	ValidateAccessToken(ctx context.Context, tokenHash string) (*model.AccessToken, error)
+
+	// Channel/chain lookup by name (for external API that uses names instead of UUIDs)
+	GetChannelByNameAndUserID(ctx context.Context, name string, userID string) (model.Channel, error)
+	GetChainByNameAndChannelID(ctx context.Context, name string, channelID string) (model.Chain, error)
 }
