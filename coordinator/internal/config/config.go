@@ -12,6 +12,9 @@ type Config struct {
 	DatabaseURL            string
 	EventRetentionDays     int
 	RetentionIntervalHours int
+	LogLevel               string
+	LogFile                string
+	LogFormat              string
 }
 
 func Load() Config {
@@ -22,6 +25,16 @@ func Load() Config {
 		DatabaseURL:            os.Getenv("COORDINATOR_DATABASE_URL"),
 		EventRetentionDays:     30,
 		RetentionIntervalHours: 24,
+		LogLevel:               "info",
+		LogFile:                os.Getenv("COORDINATOR_LOG_FILE"),
+		LogFormat:              "text",
+	}
+
+	if v := os.Getenv("COORDINATOR_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
+	}
+	if v := os.Getenv("COORDINATOR_LOG_FORMAT"); v != "" {
+		cfg.LogFormat = v
 	}
 
 	if cfg.DatabaseURL == "" {

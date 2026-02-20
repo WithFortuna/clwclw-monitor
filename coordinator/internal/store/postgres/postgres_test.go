@@ -70,10 +70,12 @@ func setupTestDB(t *testing.T) (*Store, func()) {
 		-- Channels
 		create table if not exists public.channels (
 		id uuid primary key default gen_random_uuid(),
-		name text not null unique,
+		user_id uuid null,
+		name text not null,
 		description text null,
 		created_at timestamptz not null default now()
 		);
+		create unique index if not exists uq_channels_name_user on public.channels (name, user_id);
 
 		-- Chains (new table)
 		CREATE TABLE chains (

@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 
 	"clwclw-monitor/coordinator/internal/config"
 	"clwclw-monitor/coordinator/internal/httpapi"
+	"clwclw-monitor/coordinator/internal/logger"
 	"clwclw-monitor/coordinator/internal/store"
 	"clwclw-monitor/coordinator/internal/store/memory"
 	"clwclw-monitor/coordinator/internal/store/postgres"
@@ -18,6 +20,13 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	if err := logger.Init(cfg.LogLevel, cfg.LogFormat, cfg.LogFile); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Close()
+
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
 
@@ -27,14 +36,15 @@ func main() {
 	if cfg.DatabaseURL != "" {
 		pg, err := postgres.NewStore(cfg.DatabaseURL)
 		if err != nil {
-			log.Fatalf("failed to init postgres store: %v", err)
+			slog.Error("failed to init postgres store", "error", err)
+			os.Exit(1)
 		}
 		st = pg
 		closer = pg.Close
-		log.Printf("using postgres store")
+		slog.Info("using postgres store")
 	} else {
 		st = memory.NewStore()
-		log.Printf("using memory store")
+		slog.Info("using memory store")
 	}
 
 	if closer != nil {
@@ -47,7 +57,7 @@ func main() {
 		}); ok {
 			go runEventRetentionLoop(rootCtx, purger, cfg.EventRetentionDays, cfg.RetentionIntervalHours)
 		} else {
-			log.Printf("event retention enabled but store does not support purge")
+			slog.Info("event retention enabled but store does not support purge")
 		}
 	}
 
@@ -61,7 +71,7 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("coordinator listening on %s", cfg.ListenAddr())
+		slog.Info("coordinator listening", "addr", cfg.ListenAddr())
 		errCh <- httpServer.ListenAndServe()
 	}()
 
@@ -70,9 +80,9 @@ func main() {
 
 	select {
 	case <-stop:
-		log.Printf("shutdown requested")
+		slog.Info("shutdown requested")
 	case err := <-errCh:
-		log.Printf("server error: %v", err)
+		slog.Error("server error", "error", err)
 	}
 
 	cancelRoot()
@@ -103,11 +113,11 @@ func runEventRetentionLoop(
 
 		n, err := purger.PurgeEventsBefore(ctxPurge, before)
 		if err != nil {
-			log.Printf("retention purge failed: %v", err)
+			slog.Error("retention purge failed", "error", err)
 			return
 		}
 		if n > 0 {
-			log.Printf("retention purged %d events (< %s)", n, before.Format(time.RFC3339))
+			slog.Info("retention purged events", "count", n, "before", before.Format(time.RFC3339))
 		}
 	}
 

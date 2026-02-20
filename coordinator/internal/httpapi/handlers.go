@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -129,6 +130,7 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r.Context())
 	agents, err := s.store.ListAgents(r.Context(), userID)
 	if err != nil {
+		slog.Error("failed to list agents", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list agents")
 		return
 	}
@@ -172,6 +174,7 @@ func (s *Server) handleAgentsRequestSession(w http.ResponseWriter, r *http.Reque
 				writeError(w, http.StatusNotFound, "channel_not_found", fmt.Sprintf("channel with name '%s' not found", channelName))
 				return
 			}
+			slog.Error("failed to get channel by name", "channel_name", channelName, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to get channel by name")
 			return
 		}
@@ -239,6 +242,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "agent not found")
 			return
 		}
+		slog.Error("failed to get agent", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
 		return
 	}
@@ -280,6 +284,7 @@ func (s *Server) handleAgentUpdateChannels(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusNotFound, "not_found", "agent not found")
 			return
 		}
+		slog.Error("failed to get agent", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
 		return
 	}
@@ -303,6 +308,7 @@ func (s *Server) handleAgentUpdateChannels(w http.ResponseWriter, r *http.Reques
 
 	updated, err := s.store.UpsertAgent(r.Context(), *agent)
 	if err != nil {
+		slog.Error("failed to update agent", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to update agent")
 		return
 	}
@@ -333,6 +339,7 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "agent not found")
 			return
 		}
+		slog.Error("failed to get agent", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
 		return
 	}
@@ -352,6 +359,7 @@ func (s *Server) handleAgentCurrentTask(w http.ResponseWriter, r *http.Request) 
 	// Fetch the task details
 	tasks, err := s.store.ListTasks(r.Context(), store.TaskFilter{})
 	if err != nil {
+		slog.Error("failed to list tasks", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
 		return
 	}
@@ -385,6 +393,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		channels, err := s.store.ListChannels(r.Context(), userID)
 		if err != nil {
+			slog.Error("failed to list channels", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
 			return
 		}
@@ -469,6 +478,7 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 		channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
 		chains, err := s.store.ListChains(r.Context(), userID, channelID)
 		if err != nil {
+			slog.Error("failed to list chains", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list chains")
 			return
 		}
@@ -528,6 +538,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, "not_found", "chain not found")
 				return
 			}
+			slog.Error("failed to get chain", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to get chain")
 			return
 		}
@@ -570,6 +581,7 @@ func (s *Server) handleChain(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, "not_found", "chain not found")
 				return
 			}
+			slog.Error("failed to delete chain", "chain_id", chainID, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to delete chain")
 			return
 		}
@@ -618,6 +630,7 @@ func (s *Server) handleChainDetach(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "not_owner", "agent is not the owner of this chain")
 			return
 		}
+		slog.Error("failed to detach chain", "chain_id", chainID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to detach chain")
 		return
 	}
@@ -658,6 +671,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		tasks, err := s.store.ListTasks(r.Context(), filter)
 		if err != nil {
+			slog.Error("failed to list tasks", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
 			return
 		}
@@ -1030,6 +1044,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 		events, err := s.store.ListEvents(r.Context(), filter)
 		if err != nil {
+			slog.Error("failed to list events", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to list events")
 			return
 		}
@@ -1065,6 +1080,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				UserID: userID,
 			})
 			if err != nil {
+				slog.Error("failed to list tasks", "error", err)
 				writeError(w, http.StatusInternalServerError, "internal", "failed to list tasks")
 				return
 			}
@@ -1340,6 +1356,7 @@ func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "chain not found")
 			return
 		}
+		slog.Error("failed to get chain", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get chain")
 		return
 	}
@@ -1350,12 +1367,14 @@ func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusNotFound, "not_found", "agent not found")
 			return
 		}
+		slog.Error("failed to get agent", "agent_id", agentID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
 		return
 	}
 
 	channels, err := s.store.ListChannels(r.Context(), userID)
 	if err != nil {
+		slog.Error("failed to list channels", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to list channels")
 		return
 	}

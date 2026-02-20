@@ -105,6 +105,7 @@ function usage() {
     # (deprecated) --tmux-session <session>
   node agent/clw-agent.js heartbeat
   node agent/clw-agent.js hook <completed|waiting>
+  node agent/clw-agent.js setup           # Configure notifications & Claude Code hooks
   node agent/clw-agent.js run
   node agent/clw-agent.js agentd          # Start IPC daemon (auto-started by work)
   node agent/clw-agent.js auto-start --session-name <name> --command <command>
@@ -2488,6 +2489,27 @@ async function main() {
     }
 
     process.exit(exitCode);
+  }
+
+  if (cmd === 'setup') {
+    const legacyDir = getRemotePath();
+    if (!legacyDir) {
+      console.error('[agent] Claude-Code-Remote not found.');
+      console.error('[agent] Set CLAUDE_CODE_REMOTE_PATH or install from the monorepo.');
+      process.exit(1);
+    }
+    const setupPath = path.join(legacyDir, 'setup.js');
+    if (!fs.existsSync(setupPath)) {
+      console.error(`[agent] Setup script not found: ${setupPath}`);
+      process.exit(1);
+    }
+    const child = require('child_process').spawn('node', [setupPath], {
+      stdio: 'inherit',
+      cwd: legacyDir,
+      env: process.env,
+    });
+    child.on('exit', (code) => process.exit(code ?? 0));
+    return;
   }
 
   if (cmd === 'run') {

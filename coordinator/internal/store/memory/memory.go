@@ -2,7 +2,7 @@ package memory
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -141,7 +141,7 @@ func (s *Store) CreateChannel(_ context.Context, ch model.Channel) (model.Channe
 	}
 
 	for _, existing := range s.channels {
-		if strings.EqualFold(existing.Name, ch.Name) {
+		if strings.EqualFold(existing.Name, ch.Name) && existing.UserID == ch.UserID {
 			return model.Channel{}, store.ErrConflict
 		}
 	}
@@ -716,8 +716,7 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 
 	// Verify task ownership: request agent must match assigned agent
 	if strings.TrimSpace(req.AgentID) != "" && t.AssignedAgentID != req.AgentID {
-		log.Printf("[store] CompleteTask rejected: request agent_id=%s != task assigned_agent_id=%s (task_id=%s)",
-			req.AgentID, t.AssignedAgentID, req.TaskID)
+		slog.Warn("CompleteTask rejected: agent mismatch", "request_agent_id", req.AgentID, "assigned_agent_id", t.AssignedAgentID, "task_id", req.TaskID)
 		return nil, store.ErrConflict
 	}
 
@@ -726,8 +725,7 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 	if agentID := strings.TrimSpace(req.AgentID); agentID != "" {
 		if agent, ok := s.agents[agentID]; ok {
 			if agent.CurrentTaskID != "" && agent.CurrentTaskID != req.TaskID {
-				log.Printf("[store] CompleteTask rejected: agent %s current_task_id=%s != request task_id=%s",
-					agentID, agent.CurrentTaskID, req.TaskID)
+				slog.Warn("CompleteTask rejected: current_task_id mismatch", "agent_id", agentID, "current_task_id", agent.CurrentTaskID, "request_task_id", req.TaskID)
 				return nil, store.ErrConflict
 			}
 		}

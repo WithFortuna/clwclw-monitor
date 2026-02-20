@@ -6,9 +6,7 @@
 
 - Go: `coordinator/go.mod` 기준 **Go 1.22+** 필요
 - Node.js: 레거시/agent 실행용(현재 환경에는 Node가 있음)
-- (선택) tmux: task 주입/멀티 세션 라우팅 테스트용
-
-> 참고: 이 워크스페이스 환경에서는 `go`가 설치되어 있지 않습니다(`go version`이 실패).
+- tmux: task 주입/멀티 세션 라우팅 테스트용
 
 ## 1) Coordinator(대시보드) 실행
 

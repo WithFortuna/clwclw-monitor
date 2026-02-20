@@ -3,7 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>clwclw-monitor</title>
+    <title>clwclw.monitor - Claude Code Orchestrator</title>
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta property="og:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta property="og:image" content="/og-image.png" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="clwclw.monitor - Claude Code Orchestrator" />
+    <meta name="twitter:description" content="여러 Claude Code Agent를 하나의 대시보드에서 관리하세요. 실시간 모니터링, 자동 작업 분배, 원격 제어까지." />
+    <meta name="twitter:image" content="/og-image.png" />
     <style>
       :root {
         --bg: #ffffff;
@@ -40,7 +52,7 @@
       }
       .nav-logo {
         font-size: 20px; font-weight: 800; color: var(--text);
-        letter-spacing: -0.5px;
+        letter-spacing: -0.5px; text-decoration: none; cursor: pointer;
       }
       .nav-logo span { color: var(--blue); }
       .nav-actions { display: flex; gap: 12px; align-items: center; }
@@ -62,7 +74,27 @@
         min-height: 100vh; display: flex; flex-direction: column;
         align-items: center; justify-content: center;
         padding: 120px 24px 80px; text-align: center;
-        background: linear-gradient(180deg, rgba(49,130,246,0.04) 0%, transparent 60%);
+        position: relative; overflow: hidden;
+      }
+      .hero-bg-video {
+        position: absolute; top: 50%; left: 50%;
+        min-width: 100%; min-height: 100%;
+        transform: translate(-50%, -50%);
+        object-fit: cover;
+        z-index: 0;
+      }
+      .hero-bg-overlay {
+        position: absolute; inset: 0;
+        background: linear-gradient(
+          180deg,
+          rgba(255,255,255,0.55) 0%,
+          rgba(255,255,255,0.40) 40%,
+          rgba(255,255,255,0.65) 100%
+        );
+        z-index: 1;
+      }
+      .hero > *:not(.hero-bg-video):not(.hero-bg-overlay) {
+        position: relative; z-index: 2;
       }
       .hero-badge {
         display: inline-flex; align-items: center; gap: 8px;
@@ -260,18 +292,19 @@
       }
       .feature-card {
         background: #fff; border-radius: 20px;
-        padding: 36px 28px; border: 1px solid var(--card-border);
-        transition: all 0.3s ease;
+        padding: 0; border: 1px solid var(--card-border);
+        transition: all 0.3s ease; overflow: hidden;
       }
       .feature-card:hover {
         transform: translateY(-4px);
         box-shadow: 0 12px 40px rgba(0,0,0,0.06);
       }
-      .feature-icon {
-        width: 52px; height: 52px; border-radius: 14px;
-        background: var(--blue-bg); display: flex;
-        align-items: center; justify-content: center;
-        font-size: 24px; margin-bottom: 20px;
+      .feature-card img {
+        width: 100%; aspect-ratio: 16/10; object-fit: cover;
+        display: block;
+      }
+      .feature-card-body {
+        padding: 24px 28px 28px;
       }
       .feature-card h3 {
         font-size: 20px; font-weight: 750; margin-bottom: 10px;
@@ -476,7 +509,7 @@
 
     <!-- NAV -->
     <nav class="nav">
-      <div class="nav-logo">clwclw<span>.</span>monitor</div>
+      <a href="#" class="nav-logo" onclick="window.scrollTo({top:0,behavior:'smooth'});return false;">clwclw<span>.</span>monitor</a>
       <div class="nav-actions">
         <a href="#features" class="nav-link">Features</a>
         <a href="#quickstart" class="nav-link">Quick Start</a>
@@ -487,6 +520,10 @@
 
     <!-- HERO -->
     <section class="hero">
+      <video class="hero-bg-video" autoplay muted loop playsinline>
+        <source src="/hero-banner-v3.mp4" type="video/mp4">
+      </video>
+      <div class="hero-bg-overlay"></div>
       <div class="hero-badge">Multi-Agent Task Coordinator</div>
       <h1>
         Claude Code<br>
@@ -527,34 +564,25 @@
         </p>
         <div class="features-grid">
           <div class="feature-card fade-up">
-            <div class="feature-icon">&#x1f4ca;</div>
-            <h3>Real-time Dashboard</h3>
-            <p>모든 에이전트의 상태, 작업 진행률, 이벤트 타임라인을 실시간으로 확인하세요.</p>
+            <img src="/product-hero-shot-2.png" alt="Real-time Dashboard">
+            <div class="feature-card-body">
+              <h3>Real-time Dashboard</h3>
+              <p>모든 에이전트의 상태, 작업 진행률, 이벤트 타임라인을 실시간으로 확인하세요.</p>
+            </div>
           </div>
           <div class="feature-card fade-up">
-            <div class="feature-icon">&#x26a1;</div>
-            <h3>FIFO Task Queue</h3>
-            <p>채널 기반 작업 큐로 자동 분배. 원자적 task claim으로 중복 없는 안전한 처리.</p>
+            <img src="/product-hero-shot-1.png" alt="Chain Execution">
+            <div class="feature-card-body">
+              <h3>Chain Execution</h3>
+              <p>여러 작업을 순차 실행 체인으로 묶어 복잡한 워크플로우를 자동화하세요.</p>
+            </div>
           </div>
           <div class="feature-card fade-up">
-            <div class="feature-icon">&#x1f517;</div>
-            <h3>Chain Execution</h3>
-            <p>여러 작업을 순차 실행 체인으로 묶어 복잡한 워크플로우를 자동화하세요.</p>
-          </div>
-          <div class="feature-card fade-up">
-            <div class="feature-icon">&#x1f4bb;</div>
-            <h3>Remote Control</h3>
-            <p>tmux를 통한 원격 명령 주입. 대시보드에서 직접 Claude Code 세션을 제어합니다.</p>
-          </div>
-          <div class="feature-card fade-up">
-            <div class="feature-icon">&#x1f514;</div>
-            <h3>Multi-Channel Alerts</h3>
-            <p>Telegram, Email, LINE, Desktop 알림. Claude가 멈추면 즉시 알려드립니다.</p>
-          </div>
-          <div class="feature-card fade-up">
-            <div class="feature-icon">&#x1f916;</div>
-            <h3>Multi-Session</h3>
-            <p>여러 Claude Code 인스턴스를 동시에 운영. 각 세션이 독립적으로 작업을 처리합니다.</p>
+            <img src="/product-hero-shot-3.png" alt="Remote Control">
+            <div class="feature-card-body">
+              <h3>Remote Control</h3>
+              <p>tmux를 통한 원격 명령 주입. 대시보드에서 직접 Claude Code 세션을 제어합니다.</p>
+            </div>
           </div>
         </div>
       </div>
@@ -589,11 +617,11 @@
           <div class="qs-step fade-up">
             <div class="qs-num">2</div>
             <div class="qs-content">
-              <h3>Coordinator에 연결</h3>
-              <p>Agent를 실행하면 자동으로 Coordinator에 등록됩니다. 대시보드에서 바로 확인하세요.</p>
-              <div class="qs-code" onclick="copyCmd(this, 'clw-agent work --url https://your-coordinator.com --channel backend')">
+              <h3>알림 & 훅 설정</h3>
+              <p>알림 채널(Telegram, Email, LINE)과 Claude Code 훅을 대화형 위저드로 설정합니다.</p>
+              <div class="qs-code" onclick="copyCmd(this, 'clw-agent setup')">
                 <span class="term-prompt">$</span>
-                <code>clw-agent work --url https://your-coordinator.com --channel backend</code>
+                <code>clw-agent setup</code>
                 <span class="qs-copy">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 </span>
@@ -604,8 +632,15 @@
           <div class="qs-step fade-up">
             <div class="qs-num">3</div>
             <div class="qs-content">
-              <h3>작업 분배 시작</h3>
-              <p>대시보드에서 채널과 작업을 생성하면 Agent가 자동으로 claim하고 실행합니다.</p>
+              <h3>Coordinator에 로그인</h3>
+              <p>Coordinator에 인증하고 Agent를 등록합니다. 대시보드에서 바로 확인하세요.</p>
+              <div class="qs-code" onclick="copyCmd(this, 'clw-agent login')">
+                <span class="term-prompt">$</span>
+                <code>clw-agent login</code>
+                <span class="qs-copy">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </span>
+              </div>
             </div>
           </div>
         </div>

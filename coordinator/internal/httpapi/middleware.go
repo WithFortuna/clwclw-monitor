@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -40,7 +40,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s in %s", r.Method, r.URL.Path, r.Header.Get(requestIDHeader), time.Since(start).String())
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path, "request_id", r.Header.Get(requestIDHeader), "duration", time.Since(start).String())
 	})
 }
 
@@ -90,7 +90,7 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				} else {
-					log.Printf("[auth] JWT parse failed: %v", err)
+					slog.Warn("JWT parse failed", "error", err)
 				}
 
 				// Try API token match (admin mode, no user_id)
@@ -111,7 +111,7 @@ func authMiddleware(cfg config.Config, next http.Handler) http.Handler {
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				} else {
-					log.Printf("[auth] JWT parse failed (query param): %v", err)
+					slog.Warn("JWT parse failed via query param", "error", err)
 				}
 				// Also try as API token
 				if apiToken != "" && qToken == apiToken {

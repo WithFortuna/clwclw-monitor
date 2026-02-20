@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -114,6 +115,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		slog.Error("bcrypt hash failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to hash password")
 		return
 	}
@@ -129,12 +131,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "username already exists")
 			return
 		}
+		slog.Error("failed to create user", "username", req.Username, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to create user")
 		return
 	}
 
 	token, err := generateJWT(created.ID, created.Username)
 	if err != nil {
+		slog.Error("failed to generate JWT after register", "user_id", created.ID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate token")
 		return
 	}
@@ -162,6 +166,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
+		if err.Error() != "not_found" && !strings.Contains(err.Error(), "not_found") {
+			slog.Error("failed to get user for login", "username", req.Username, "error", err)
+		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
 		return
 	}
@@ -173,6 +180,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	token, err := generateJWT(user.ID, user.Username)
 	if err != nil {
+		slog.Error("failed to generate JWT after login", "user_id", user.ID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate token")
 		return
 	}
@@ -183,6 +191,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if req.AgentAuth {
 		code, err := generateAuthCode()
 		if err != nil {
+			slog.Error("failed to generate auth code", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to generate auth code")
 			return
 		}
@@ -193,6 +202,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: time.Now().Add(authCodeExpiry),
 		}
 		if err := s.store.CreateAuthCode(r.Context(), authCode); err != nil {
+			slog.Error("failed to create auth code", "user_id", user.ID, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to create auth code")
 			return
 		}
@@ -238,6 +248,7 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("agent_auth") == "true" {
 		code, err := generateAuthCode()
 		if err != nil {
+			slog.Error("failed to generate auth code", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to generate auth code")
 			return
 		}
@@ -248,6 +259,7 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: time.Now().Add(authCodeExpiry),
 		}
 		if err := s.store.CreateAuthCode(r.Context(), authCode); err != nil {
+			slog.Error("failed to create auth code", "user_id", userID, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal", "failed to create auth code")
 			return
 		}
@@ -278,18 +290,21 @@ func (s *Server) handleAgentToken(w http.ResponseWriter, r *http.Request) {
 
 	ac, err := s.store.ConsumeAuthCode(r.Context(), code)
 	if err != nil {
+		slog.Warn("ConsumeAuthCode failed", "error", err)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired auth code")
 		return
 	}
 
 	user, err := s.store.GetUserByID(r.Context(), ac.UserID)
 	if err != nil {
+		slog.Error("failed to get user by ID for agent token", "user_id", ac.UserID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to get user")
 		return
 	}
 
 	token, err := generateAgentJWT(user.ID, user.Username)
 	if err != nil {
+		slog.Error("failed to generate agent JWT", "user_id", user.ID, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal", "failed to generate agent token")
 		return
 	}
