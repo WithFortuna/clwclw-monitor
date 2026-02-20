@@ -1,7 +1,4 @@
-## Acknowledgements
+## License
 
-This project is based on the ideas and original implementation of
-[Claude-Code-Remote](https://github.com/JessyTsui/Claude-Code-Remote),
-licensed under the MIT License.
-
-This project is going to fully rewrite in <New Language> with additional features.
+Unless otherwise noted, this repository is licensed under **GNU Affero General Public License v3.0 (AGPL-3.0-only)**.
+The `Claude-Code-Remote/` directory is a third-party project and keeps its original MIT license([Claude-Code-Remote](https://github.com/JessyTsui/Claude-Code-Remote)).
