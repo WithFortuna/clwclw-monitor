@@ -2610,6 +2610,14 @@ async function main() {
   }
 
   if (cmd === 'login') {
+    // Check tmux dependency
+    const tmuxCheck = spawnSync('which', ['tmux'], { stdio: 'ignore' });
+    if (tmuxCheck.status !== 0) {
+      console.error('[agent] tmux is required but not found.');
+      console.error('[agent] Install:  brew install tmux');
+      process.exit(1);
+    }
+
     // Mode selection (if not yet configured)
     let mode = getDeployMode();
     if (!mode) {
