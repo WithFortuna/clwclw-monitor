@@ -33,10 +33,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	threshold := 30 * time.Second
 	agentResponses := make([]agentResponse, len(agents))
 	for i, a := range agents {
-		agentResponses[i] = agentResponse{
-			Agent:        a,
-			WorkerStatus: a.DerivedWorkerStatus(threshold),
-		}
+		agentResponses[i] = agentWithDerivedRuntimeStatus(a, threshold)
 	}
 
 	channels, err := s.store.ListChannels(r.Context(), userID)

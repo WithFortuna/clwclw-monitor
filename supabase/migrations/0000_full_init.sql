@@ -109,6 +109,7 @@ create table if not exists public.tasks (
   title text not null,
   description text null,
   type text null,
+  agent_session_request_token text null,
   status text not null default 'queued',
   priority int not null default 0,
   assigned_agent_id uuid null references public.agents(id) on delete set null,
@@ -124,6 +125,9 @@ create index if not exists idx_tasks_channel_status_created on public.tasks (cha
 create index if not exists idx_tasks_status_created on public.tasks (status, created_at asc);
 create index if not exists idx_tasks_assigned_agent on public.tasks (assigned_agent_id);
 create index if not exists idx_tasks_chain_id on public.tasks (chain_id);
+create unique index if not exists uq_tasks_agent_session_request_token
+on public.tasks (agent_session_request_token)
+where agent_session_request_token is not null;
 
 create trigger trg_tasks_updated_at
 before update on public.tasks

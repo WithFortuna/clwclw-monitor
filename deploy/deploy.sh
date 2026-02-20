@@ -1,18 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-############################################
-# Config
-############################################
-IMAGE_NAME="${IMAGE_NAME}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
-PLATFORMS="linux/amd64,linux/arm64"
-DOCKERFILE="../coordinator/Dockerfile"
-BUILD_CONTEXT=".."
 ENV_FILE="../.env.prod"
-
 ############################################
-# 1. Load .env and export variables
+# 0. Load .env and export variables
 ############################################
 if [ ! -f "$ENV_FILE" ]; then
   echo "❌ .env file not found"
@@ -23,6 +14,13 @@ echo "🔐 Loading environment variables from .env"
 set -a
 source "$ENV_FILE"
 set +a
+
+############################################
+# 1. Config
+############################################
+PLATFORMS="linux/amd64,linux/arm64"
+DOCKERFILE="../coordinator/Dockerfile"
+BUILD_CONTEXT=".."
 
 ############################################
 # 2. Docker login (only if not logged in)

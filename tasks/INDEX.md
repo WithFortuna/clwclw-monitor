@@ -24,5 +24,10 @@
 - `0020-acceptance-test-runbook.md` — **Done** — 로컬 실행/화면 확인/인수테스트 절차 문서화
 - `0021-interactive-prompts.md` — **Done** — 인터랙티브 선택지 감지 → 대시보드 표시 → 사용자 선택/주입
 - `0022-interactive-prompt-navigation.md` — **Done** — Enter/Tab/Arrow/Esc 기반 선택지 UI 감지 + 키 주입(옵션 선택)
+- `0049-request-session-token-completion.md` — **Done** — request_claude_session 완료를 전용 이벤트 + agent_session_request_token 기반으로 분리 처리
+- `0050-session-request-completion-hardening.md` — **Done** — 전용 완료 이벤트 payload 정규화 + task 상태 전이 실패 명시 에러 처리
 - `0054-enforce-chain-assign-subscription-check.md` — **Done** — 체인 수동 할당 시 채널 구독 검증 + UI 구독 추가 확인/재시도
 - `0055-fix-subscription-dropdown-edit-refresh-race.md` — **Done** — Agent subscription 드롭다운 편집 중 auto refresh 리렌더 경합 수정
+- `0061-fix-queued-popover-refresh-focus-race.md` — **Done** — 체인/Queued popover 입력 중 refresh 리렌더로 인한 포커스/드래프트 유실 방지
+- `0062-fix-agent-list-order-jitter.md` — **Done** — 에이전트 목록 응답을 이름 오름차순으로 고정해 대시보드 리렌더링 순서 흔들림 제거
+- `0063-offline-worker-forces-claude-not-running.md` — **Done** — Worker가 offline일 때 Claude 상태를 not running으로 강제

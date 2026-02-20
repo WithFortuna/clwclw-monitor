@@ -119,7 +119,15 @@ func (s *Store) ListAgents(_ context.Context, userID string) ([]model.Agent, err
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastSeen.After(out[j].LastSeen)
+		nameI := strings.ToLower(strings.TrimSpace(out[i].Name))
+		nameJ := strings.ToLower(strings.TrimSpace(out[j].Name))
+		if nameI != nameJ {
+			return nameI < nameJ
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
 	})
 	return out, nil
 }

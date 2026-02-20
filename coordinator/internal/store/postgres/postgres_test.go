@@ -249,6 +249,26 @@ func setupTestDB(t *testing.T) (*Store, func()) {
 	}
 }
 
+func TestPostgresStore_ListAgents_SortedByNameAscending(t *testing.T) {
+	s, teardown := setupTestDB(t)
+	defer teardown()
+	ctx := context.Background()
+
+	_, err := s.UpsertAgent(ctx, model.Agent{Name: "zeta", Status: model.AgentStatusIdle, ClaudeStatus: model.ClaudeStatusIdle})
+	require.NoError(t, err)
+	_, err = s.UpsertAgent(ctx, model.Agent{Name: "beta", Status: model.AgentStatusIdle, ClaudeStatus: model.ClaudeStatusIdle})
+	require.NoError(t, err)
+	_, err = s.UpsertAgent(ctx, model.Agent{Name: "alpha", Status: model.AgentStatusIdle, ClaudeStatus: model.ClaudeStatusIdle})
+	require.NoError(t, err)
+
+	agents, err := s.ListAgents(ctx, "")
+	require.NoError(t, err)
+	require.Len(t, agents, 3)
+	assert.Equal(t, "alpha", agents[0].Name)
+	assert.Equal(t, "beta", agents[1].Name)
+	assert.Equal(t, "zeta", agents[2].Name)
+}
+
 func TestPostgresStore_ChainCRUD(t *testing.T) {
 	s, teardown := setupTestDB(t)
 	defer teardown()

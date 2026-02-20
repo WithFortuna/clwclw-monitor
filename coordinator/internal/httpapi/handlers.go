@@ -137,10 +137,7 @@ func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	threshold := 30 * time.Second
 	response := make([]agentResponse, len(agents))
 	for i, a := range agents {
-		response[i] = agentResponse{
-			Agent:        a,
-			WorkerStatus: a.DerivedWorkerStatus(threshold),
-		}
+		response[i] = agentWithDerivedRuntimeStatus(a, threshold)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"agents": response})

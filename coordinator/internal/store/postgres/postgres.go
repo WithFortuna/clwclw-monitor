@@ -131,7 +131,7 @@ func (s *Store) ListAgents(ctx context.Context, userID string) ([]model.Agent, e
 		query += " where user_id = $1::uuid"
 		args = append(args, userID)
 	}
-	query += " order by last_seen desc"
+	query += " order by lower(name) asc, name asc, id asc"
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
