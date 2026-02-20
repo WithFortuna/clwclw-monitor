@@ -206,9 +206,10 @@ func (s *Server) handleExternalCreateTask(w http.ResponseWriter, r *http.Request
 			return
 		}
 	} else {
+		const maxAutoChainNameLength = 56
 		autoName := "CSPG: " + title
-		if len(autoName) > 56 {
-			autoName = autoName[:56]
+		if len(autoName) > maxAutoChainNameLength {
+			autoName = autoName[:maxAutoChainNameLength]
 		}
 		chain, err = s.store.CreateChain(r.Context(), model.Chain{
 			UserID:    userID,

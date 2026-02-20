@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,13 +52,9 @@ func (s *Store) ListAccessTokens(_ context.Context, userID string) ([]model.Acce
 	}
 
 	// Sort by created_at descending
-	for i := 0; i < len(out)-1; i++ {
-		for j := i + 1; j < len(out); j++ {
-			if out[i].CreatedAt.Before(out[j].CreatedAt) {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
 	return out, nil
 }
 
