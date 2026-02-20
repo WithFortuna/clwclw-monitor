@@ -25,6 +25,7 @@
         <nav class="topbar-nav">
           <a href="#" class="topbar-nav-link active" data-section="dashboard" onclick="event.preventDefault();showSection('dashboard')">Dashboard</a>
           <a href="#" class="topbar-nav-link" data-section="setup" onclick="event.preventDefault();showSection('setup')">Setup Guide</a>
+          <a href="#" class="topbar-nav-link" data-section="settings" onclick="event.preventDefault();showSection('settings')">Settings</a>
         </nav>
       </div>
       <div class="topbar-right">
@@ -293,6 +294,102 @@
       </div>
     </div>
 
+    <!-- ===== SETTINGS SECTION ===== -->
+    <main id="sectionSettings" class="container" style="display:none;">
+      <div class="setup-page">
+        <div class="setup-hero">
+          <h1 class="setup-page-title">Settings</h1>
+          <p class="setup-page-desc">외부 서비스 연동을 위한 Access Token을 관리합니다.</p>
+        </div>
+
+        <!-- Access Tokens -->
+        <div class="setup-page-card" style="max-width:900px;margin:0 auto 24px;">
+          <div class="setup-page-card-header" style="margin-bottom:16px;">
+            <h2 style="margin:0;">Access Tokens</h2>
+          </div>
+
+          <!-- Issue form -->
+          <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px;">
+            <label style="font-size:13px;font-weight:500;">Token Name</label>
+            <input id="atName" placeholder="e.g. CSPG Production" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px;" />
+
+            <label style="font-size:13px;font-weight:500;">Scopes</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" id="scopeTasksWrite" checked />
+              <label for="scopeTasksWrite" style="font-size:13px;cursor:pointer;">
+                <code>tasks:write</code> — 외부 API로 task 생성 허용
+              </label>
+            </div>
+
+            <button class="btn primary" onclick="createAccessToken()" style="align-self:flex-start;">Issue Token</button>
+          </div>
+
+          <!-- Token reveal panel (hidden until token issued) -->
+          <div id="atReveal" style="display:none;border:1px solid var(--ok);border-radius:8px;padding:16px;margin-bottom:20px;background:var(--surface);">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;color:var(--warn);">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <strong>이 토큰은 다시 표시되지 않습니다. 지금 복사해 주세요.</strong>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-family:monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px 12px;">
+              <span id="atTokenValue" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+              <button class="btn" onclick="copyTokenValue()" style="flex-shrink:0;font-size:12px;">Copy</button>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:var(--muted);">
+              Usage: <code>Authorization: Bearer &lt;token&gt;</code>
+            </div>
+            <div style="margin-top:12px;text-align:right;">
+              <button class="btn" onclick="document.getElementById('atReveal').style.display='none'">Done</button>
+            </div>
+          </div>
+
+          <!-- Token list -->
+          <div id="atList" style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                  <th style="padding:6px 10px;">Name</th>
+                  <th style="padding:6px 10px;">Prefix</th>
+                  <th style="padding:6px 10px;">Scopes</th>
+                  <th style="padding:6px 10px;">Created</th>
+                  <th style="padding:6px 10px;">Last Used</th>
+                  <th style="padding:6px 10px;">Status</th>
+                  <th style="padding:6px 10px;"></th>
+                </tr>
+              </thead>
+              <tbody id="atTableBody">
+                <tr><td colspan="7" style="padding:12px;text-align:center;color:var(--muted);">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- API Usage -->
+        <div class="setup-page-card" style="max-width:900px;margin:0 auto;">
+          <div class="setup-page-card-header" style="margin-bottom:12px;">
+            <h2 style="margin:0;">API Usage</h2>
+          </div>
+          <div class="setup-cmd" style="cursor:default;flex-direction:column;align-items:flex-start;gap:4px;padding:12px 16px;">
+            <code style="white-space:pre;font-size:12px;">curl -X POST https://your-host/v1/external/tasks \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "backend-alerts",
+    "chain":   "Error Monitoring",
+    "title":   "NPE in UserService",
+    "description": "stack trace..."
+  }'</code>
+          </div>
+          <div style="margin-top:12px;font-size:12px;color:var(--muted);">
+            <strong>Fields:</strong>
+            <code>channel</code> (required) — channel name ·
+            <code>chain</code> (optional) — reuse or create chain by name ·
+            <code>title</code> (required) ·
+            <code>description</code>, <code>priority</code>, <code>execution_mode</code> (optional)
+          </div>
+        </div>
+      </div>
+    </main>
+
     <footer class="footer">
       <div>Polling-based MVP. Real-time (SSE/WS/Supabase Realtime) will come later.</div>
     </footer>
@@ -301,19 +398,25 @@
       function showSection(name, pushHistory) {
         document.getElementById('sectionDashboard').style.display = name === 'dashboard' ? '' : 'none';
         document.getElementById('sectionSetup').style.display = name === 'setup' ? '' : 'none';
+        document.getElementById('sectionSettings').style.display = name === 'settings' ? '' : 'none';
         document.querySelectorAll('.topbar-nav-link').forEach(link => {
           link.classList.toggle('active', link.dataset.section === name);
         });
+        if (name === 'settings') loadAccessTokens();
+        var hash = name === 'setup' ? '#setup' : name === 'settings' ? '#settings' : '#dashboard';
         if (pushHistory !== false) {
-          history.pushState({ section: name }, '', name === 'setup' ? '#setup' : '#dashboard');
+          history.pushState({ section: name }, '', hash);
         }
       }
       window.addEventListener('popstate', function(e) {
-        var section = (e.state && e.state.section) || (location.hash === '#setup' ? 'setup' : 'dashboard');
+        var h = location.hash;
+        var section = (e.state && e.state.section) || (h === '#setup' ? 'setup' : h === '#settings' ? 'settings' : 'dashboard');
         showSection(section, false);
       });
       (function() {
-        if (location.hash === '#setup') showSection('setup', false);
+        var h = location.hash;
+        if (h === '#setup') showSection('setup', false);
+        else if (h === '#settings') showSection('settings', false);
         else history.replaceState({ section: 'dashboard' }, '', '#dashboard');
       })();
       function copySetupCmd(el, cmd) {
@@ -322,6 +425,108 @@
           icon.style.color = 'var(--ok)';
           setTimeout(() => icon.style.color = '', 1500);
         });
+      }
+
+      // ---- Access Token Management ----
+      function loadAccessTokens() {
+        fetch('/v1/access-tokens', { headers: authHeaders() })
+          .then(r => r.json())
+          .then(d => renderAccessTokens(d.access_tokens || []))
+          .catch(() => {
+            document.getElementById('atTableBody').innerHTML =
+              '<tr><td colspan="7" style="padding:12px;text-align:center;color:var(--danger);">Failed to load tokens</td></tr>';
+          });
+      }
+
+      function renderAccessTokens(tokens) {
+        const tbody = document.getElementById('atTableBody');
+        if (!tokens || tokens.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="padding:12px;text-align:center;color:var(--muted);">No access tokens yet</td></tr>';
+          return;
+        }
+        tbody.innerHTML = tokens.map(t => {
+          const revoked = !!t.revoked_at;
+          const status = revoked
+            ? '<span style="color:var(--muted);">Revoked</span>'
+            : '<span style="color:var(--ok);">Active</span>';
+          const revokeBtn = revoked ? '' :
+            `<button class="btn" style="font-size:11px;padding:2px 8px;color:var(--danger);" onclick="revokeToken('${t.id}')">Revoke</button>`;
+          const lastUsed = t.last_used_at ? relativeTime(t.last_used_at) : '—';
+          return `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px 10px;">${esc(t.name)}</td>
+            <td style="padding:8px 10px;font-family:monospace;">${esc(t.prefix)}…</td>
+            <td style="padding:8px 10px;">${(t.scopes||[]).map(s=>`<code>${esc(s)}</code>`).join(', ')}</td>
+            <td style="padding:8px 10px;white-space:nowrap;">${fmtDate(t.created_at)}</td>
+            <td style="padding:8px 10px;">${lastUsed}</td>
+            <td style="padding:8px 10px;">${status}</td>
+            <td style="padding:8px 10px;">${revokeBtn}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      function createAccessToken() {
+        const name = document.getElementById('atName').value.trim();
+        if (!name) { alert('Token name is required'); return; }
+        const scopes = document.getElementById('scopeTasksWrite').checked ? ['tasks:write'] : [];
+        if (scopes.length === 0) { alert('At least one scope must be selected'); return; }
+
+        fetch('/v1/access-tokens', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, scopes })
+        })
+        .then(r => r.json())
+        .then(d => {
+          if (d.error) { alert(d.error.message || 'Failed to create token'); return; }
+          document.getElementById('atName').value = '';
+          document.getElementById('atTokenValue').textContent = d.token;
+          document.getElementById('atReveal').style.display = '';
+          loadAccessTokens();
+        })
+        .catch(() => alert('Failed to create token'));
+      }
+
+      function revokeToken(id) {
+        if (!confirm('Revoke this token? It will stop working immediately.')) return;
+        fetch('/v1/access-tokens/' + id, {
+          method: 'DELETE',
+          headers: authHeaders()
+        })
+        .then(() => loadAccessTokens())
+        .catch(() => alert('Failed to revoke token'));
+      }
+
+      function copyTokenValue() {
+        const val = document.getElementById('atTokenValue').textContent;
+        navigator.clipboard.writeText(val).then(() => {
+          const btn = document.querySelector('#atReveal button');
+          if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); }
+        });
+      }
+
+      function esc(s) {
+        return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
+
+      function fmtDate(iso) {
+        if (!iso) return '—';
+        return new Date(iso).toLocaleDateString();
+      }
+
+      function relativeTime(iso) {
+        if (!iso) return '—';
+        const diff = Date.now() - new Date(iso).getTime();
+        const m = Math.floor(diff / 60000);
+        if (m < 1) return 'just now';
+        if (m < 60) return m + '분 전';
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + '시간 전';
+        return Math.floor(h / 24) + '일 전';
+      }
+
+      function authHeaders() {
+        const token = (localStorage.getItem('clw_jwt') || '').trim();
+        return token ? { 'Authorization': 'Bearer ' + token } : {};
       }
     </script>
     <script src="/app.js"></script>
