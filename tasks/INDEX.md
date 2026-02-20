@@ -33,3 +33,7 @@
 - `0063-offline-worker-forces-claude-not-running.md` — **Done** — Worker가 offline일 때 Claude 상태를 not running으로 강제
 - `0066-root-license-agpl.md` — **Done** — 루트 프로젝트 라이선스를 AGPL로 전환하고 `Claude-Code-Remote/`는 원 라이선스를 유지
 - `0067-fix-deploy-npm-workspace-from-deploy-dir.md` — **Done** — `deploy/` 실행 기준으로 npm workspace publish 실패(`No workspaces found`) 수정
+- `0071-register-favicon-from-design-svg.md` — **Done** — `design/favicon/favicon_1.svg`를 웹 UI 공통 파비콘으로 등록
+- `0073-agent-identity-lifecycle-heartbeat-pane-bind.md` — **Done** — heartbeat 기반 agent_id 발급 + pane_id 명시 바인딩으로 에이전트 식별자 수명주기 정합화
+- `0074-go-test-guideline-and-usecase-tests.md` — **Done** — Go 테스트 가이드라인(BDD 기본 포함) 문서화 + Coordinator 핵심 유스케이스 테스트 코드 추가
+- `0075-js-bdd-testing-guide.md` — **Done** — JavaScript 클라이언트 브릿지 BDD 테스트 가이드 문서화(테스트 계층/라이브러리/도입 순서)

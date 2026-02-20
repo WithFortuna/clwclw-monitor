@@ -68,6 +68,7 @@ go test -v ./internal/store/memory/...
 - UI: `GET /` (static dashboard; polls API endpoints)
 - `GET /health`
 - `POST /v1/agents/heartbeat`
+- `POST /v1/agents/{id}/bind-pane`
 - `GET /v1/agents`
 - `POST /v1/channels`
 - `GET /v1/channels`
@@ -88,6 +89,8 @@ go test -v ./internal/store/memory/...
 - `GET /v1/stream` (SSE; dashboard real-time updates)
 
 요청/응답 스키마는 `coordinator/internal/httpapi/handlers.go`의 DTO를 기준으로 합니다.
+
+`POST /v1/agents/heartbeat`는 `agent_id`가 비어 있으면 신규 agent를 생성하고 canonical `agent.id`를 응답합니다.
 
 ## Idempotency (MVP)
 

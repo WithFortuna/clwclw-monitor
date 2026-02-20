@@ -1,6 +1,6 @@
 {
   "name": "@clwclw-monitor/agent",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "description": "Agent bridge for clwclw-monitor coordinator",
   "bin": {
     "clwclw-agent": "./clw-agent.js",
