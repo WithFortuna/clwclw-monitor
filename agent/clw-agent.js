@@ -2572,6 +2572,13 @@ async function main() {
   }
 
   if (cmd === 'setup') {
+    const claudeDir = path.join(process.cwd(), '.claude');
+    if (!fs.existsSync(claudeDir)) {
+      console.error(`[agent] .claude 디렉토리를 찾을 수 없습니다: ${process.cwd()}`);
+      console.error('[agent] Claude Code 프로젝트 루트 디렉토리에서 실행해 주세요.');
+      process.exit(1);
+    }
+
     const legacyDir = getRemotePath();
     if (!legacyDir) {
       console.error('[agent] Claude-Code-Remote not found.');
@@ -2585,7 +2592,7 @@ async function main() {
     }
     const child = require('child_process').spawn('node', [setupPath], {
       stdio: 'inherit',
-      cwd: legacyDir,
+      cwd: process.cwd(),
       env: process.env,
     });
     child.on('exit', (code) => process.exit(code ?? 0));
