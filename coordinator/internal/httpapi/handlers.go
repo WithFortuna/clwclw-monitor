@@ -66,7 +66,8 @@ func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.store.UpsertAgent(r.Context(), a)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		slog.Error("failed to upsert agent", "agent_id", a.ID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "failed to upsert agent")
 		return
 	}
 
@@ -496,17 +497,24 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if strings.TrimSpace(req.Name) == "" {
+			writeError(w, http.StatusBadRequest, "name_required", "name is required")
+			return
+		}
+
 		ch, err := s.store.CreateChannel(r.Context(), model.Channel{
 			UserID:      userID,
 			Name:        strings.TrimSpace(req.Name),
 			Description: strings.TrimSpace(req.Description),
 		})
 		if err != nil {
-			status := http.StatusBadRequest
-			if err == store.ErrConflict {
-				status = http.StatusConflict
+			switch err {
+			case store.ErrConflict:
+				writeError(w, http.StatusConflict, "conflict", "channel name already exists")
+			default:
+				slog.Error("failed to create channel", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal", "failed to create channel")
 			}
-			writeError(w, status, "invalid_request", err.Error())
 			return
 		}
 
@@ -581,6 +589,15 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if strings.TrimSpace(req.ChannelID) == "" {
+			writeError(w, http.StatusBadRequest, "channel_id_required", "channel_id is required")
+			return
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			writeError(w, http.StatusBadRequest, "name_required", "name is required")
+			return
+		}
+
 		chain, err := s.store.CreateChain(r.Context(), model.Chain{
 			UserID:      userID,
 			ChannelID:   strings.TrimSpace(req.ChannelID),
@@ -589,13 +606,15 @@ func (s *Server) handleChains(w http.ResponseWriter, r *http.Request) {
 			Status:      req.Status,
 		})
 		if err != nil {
-			status := http.StatusBadRequest
-			if err == store.ErrNotFound { // e.g. channel_id not found
-				status = http.StatusNotFound
-			} else if err == store.ErrConflict { // e.g. duplicate name
-				status = http.StatusConflict
+			switch err {
+			case store.ErrNotFound:
+				writeError(w, http.StatusNotFound, "not_found", "channel not found")
+			case store.ErrConflict:
+				writeError(w, http.StatusConflict, "conflict", "chain name already exists in this channel")
+			default:
+				slog.Error("failed to create chain", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal", "failed to create chain")
 			}
-			writeError(w, status, "invalid_request", err.Error())
 			return
 		}
 
@@ -774,6 +793,15 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if strings.TrimSpace(req.ChannelID) == "" {
+			writeError(w, http.StatusBadRequest, "channel_id_required", "channel_id is required")
+			return
+		}
+		if strings.TrimSpace(req.Title) == "" {
+			writeError(w, http.StatusBadRequest, "title_required", "title is required")
+			return
+		}
+
 		// Check if ChainID is empty, if so, create a new chain for this task
 		if strings.TrimSpace(req.ChainID) == "" {
 			newChain, err := s.store.CreateChain(r.Context(), model.Chain{
@@ -819,13 +847,15 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			ExecutionMode: req.ExecutionMode,
 		})
 		if err != nil {
-			status := http.StatusBadRequest
-			if err == store.ErrNotFound { // e.g. channel_id or chain_id not found
-				status = http.StatusNotFound
-			} else if err == store.ErrConflict { // e.g. duplicate sequence in chain
-				status = http.StatusConflict
+			switch err {
+			case store.ErrNotFound:
+				writeError(w, http.StatusNotFound, "not_found", "channel or chain not found")
+			case store.ErrConflict:
+				writeError(w, http.StatusConflict, "conflict", "duplicate sequence in chain")
+			default:
+				slog.Error("failed to create task", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal", "failed to create task")
 			}
-			writeError(w, status, "invalid_request", err.Error())
 			return
 		}
 		s.bus.Publish(EventTasks, userID)
@@ -873,7 +903,8 @@ func (s *Server) handleTasksClaim(w http.ResponseWriter, r *http.Request) {
 		case store.ErrConflict:
 			writeError(w, http.StatusConflict, "conflict", "duplicate claim (idempotency)")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to claim task", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to claim task")
 		}
 		return
 	}
@@ -916,7 +947,8 @@ func (s *Server) handleTasksAssign(w http.ResponseWriter, r *http.Request) {
 		case store.ErrConflict:
 			writeError(w, http.StatusConflict, "conflict", "task conflict")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to assign task", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to assign task")
 		}
 		return
 	}
@@ -959,7 +991,8 @@ func (s *Server) handleTasksComplete(w http.ResponseWriter, r *http.Request) {
 		case store.ErrConflict:
 			writeError(w, http.StatusConflict, "conflict", "task/agent conflict")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to complete task", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to complete task")
 		}
 		return
 	}
@@ -1004,7 +1037,8 @@ func (s *Server) handleTasksFail(w http.ResponseWriter, r *http.Request) {
 		case store.ErrConflict:
 			writeError(w, http.StatusConflict, "conflict", "task/agent conflict")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to fail task", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to fail task")
 		}
 		return
 	}
@@ -1047,13 +1081,15 @@ func (s *Server) handleTaskInputs(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
 	})
 	if err != nil {
-		status := http.StatusBadRequest
-		if err == store.ErrNotFound {
-			status = http.StatusNotFound
-		} else if err == store.ErrConflict {
-			status = http.StatusConflict
+		switch err {
+		case store.ErrNotFound:
+			writeError(w, http.StatusNotFound, "not_found", "task or agent not found")
+		case store.ErrConflict:
+			writeError(w, http.StatusConflict, "conflict", "duplicate task input (idempotency)")
+		default:
+			slog.Error("failed to create task input", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to create task input")
 		}
-		writeError(w, status, "invalid_request", err.Error())
 		return
 	}
 
@@ -1092,7 +1128,8 @@ func (s *Server) handleTaskInputsClaim(w http.ResponseWriter, r *http.Request) {
 		case store.ErrNotFound:
 			writeError(w, http.StatusNotFound, "not_found", "not found")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to claim task input", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to claim task input")
 		}
 		return
 	}
@@ -1144,6 +1181,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		var req createEventRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+			return
+		}
+
+		if strings.TrimSpace(req.AgentID) == "" {
+			writeError(w, http.StatusBadRequest, "agent_id_required", "agent_id is required")
+			return
+		}
+		if strings.TrimSpace(req.Type) == "" {
+			writeError(w, http.StatusBadRequest, "type_required", "type is required")
 			return
 		}
 
@@ -1248,16 +1294,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
 		})
 		if err != nil {
-			if err == store.ErrConflict {
+			switch err {
+			case store.ErrConflict:
 				// idempotency: event already exists; treat as success.
 				writeJSON(w, http.StatusOK, map[string]any{"deduped": true})
-				return
-			}
-			if err == store.ErrNotFound {
+			case store.ErrNotFound:
 				writeError(w, http.StatusNotFound, "not_found", "agent not found")
-				return
+			default:
+				slog.Error("failed to create event", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal", "failed to create event")
 			}
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 
@@ -1498,7 +1544,8 @@ func (s *Server) handleChainAssignAgent(w http.ResponseWriter, r *http.Request) 
 		case store.ErrNotFound:
 			writeError(w, http.StatusNotFound, "not_found", "chain not found")
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			slog.Error("failed to assign agent to chain", "chain_id", chainID, "agent_id", agentID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal", "failed to assign agent to chain")
 		}
 		return
 	}

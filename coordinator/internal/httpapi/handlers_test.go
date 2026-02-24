@@ -199,12 +199,12 @@ func TestHandleTasks_NonExistentChainID(t *testing.T) {
 	taskReq := httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(taskBody))
 	server.handleTasks(taskRec, taskReq)
 
-	if taskRec.Code != http.StatusBadRequest {
-		t.Fatalf("Expected status %d, got %d: %s", http.StatusBadRequest, taskRec.Code, taskRec.Body.String())
+	if taskRec.Code != http.StatusNotFound {
+		t.Fatalf("Expected status %d, got %d: %s", http.StatusNotFound, taskRec.Code, taskRec.Body.String())
 	}
 
-	if !strings.Contains(taskRec.Body.String(), "chain_id_not_found") {
-		t.Errorf("Expected error message containing 'chain_id_not_found', got '%s'", taskRec.Body.String())
+	if !strings.Contains(taskRec.Body.String(), "not_found") {
+		t.Errorf("Expected error code 'not_found', got '%s'", taskRec.Body.String())
 	}
 }
 

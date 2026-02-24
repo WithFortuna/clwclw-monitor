@@ -452,7 +452,7 @@ func (s *Store) CreateTask(_ context.Context, t model.Task) (model.Task, error) 
 		return model.Task{}, errWithCode("chain_id_required")
 	}
 	if _, ok := s.chains[t.ChainID]; !ok {
-		return model.Task{}, errWithCode("chain_id_not_found")
+		return model.Task{}, store.ErrNotFound
 	}
 
 	now := time.Now().UTC()
