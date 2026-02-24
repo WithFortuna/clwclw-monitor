@@ -230,16 +230,11 @@ function makeAgentHookCommand(event) {
 }
 
 function ensureHooksFile() {
-    const repoRoot = path.resolve(__dirname, '..');
-    const settingsDir = path.join(repoRoot, '.claude');
+    const settingsDir = path.join(process.cwd(), '.claude');
     const settingsPath = path.join(settingsDir, 'settings.local.json');
     let settings = {};
     let existing = false;
     let backupPath = null;
-
-    if (!fs.existsSync(settingsDir)) {
-        fs.mkdirSync(settingsDir, { recursive: true });
-    }
 
     if (fs.existsSync(settingsPath)) {
         existing = true;

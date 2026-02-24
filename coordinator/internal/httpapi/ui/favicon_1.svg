@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="clw glass favicon refined">
+  <defs>
+    <linearGradient id="glassEdge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F4F8FC"/>
+      <stop offset="55%" stop-color="#C7D4E0"/>
+      <stop offset="100%" stop-color="#8EA2B3"/>
+    </linearGradient>
+    <linearGradient id="glassCore" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.86"/>
+      <stop offset="100%" stop-color="#DCE7F0" stop-opacity="0.34"/>
+    </linearGradient>
+    <filter id="shadow" x="-28%" y="-28%" width="160%" height="180%">
+      <feDropShadow dx="0.2" dy="1.3" stdDeviation="1.2" flood-color="#8D9DB0" flood-opacity="0.45"/>
+    </filter>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="0.9"/>
+    </filter>
+    <linearGradient id="floorFade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#CAD6E0" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#CAD6E0" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" fill="#FFFFFF" fill-opacity="0"/>
+
+  <ellipse cx="33" cy="52.2" rx="21.5" ry="2.8" fill="url(#floorFade)"/>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)">
+    <!-- back edge gives glass thickness -->
+    <g opacity="0.55" transform="translate(0.8,0.75)">
+      <path d="M20 18A14 14 0 1 0 20 46" stroke="#9BAFBE" stroke-width="7.2"/>
+      <path d="M31 16L28.4 48" stroke="#9BAFBE" stroke-width="7.2"/>
+      <path d="M37.5 23L41.6 47L45.3 29L49.4 47L54.4 22.7" stroke="#9BAFBE" stroke-width="7.2"/>
+    </g>
+
+    <!-- main stroke -->
+    <path d="M20 18A14 14 0 1 0 20 46" stroke="url(#glassEdge)" stroke-width="7.2"/>
+    <path d="M31 16L28.4 48" stroke="url(#glassEdge)" stroke-width="7.2"/>
+    <path d="M37.5 23L41.6 47L45.3 29L49.4 47L54.4 22.7" stroke="url(#glassEdge)" stroke-width="7.2"/>
+
+    <!-- inner highlight -->
+    <path d="M20 18A14 14 0 1 0 20 46" stroke="url(#glassCore)" stroke-width="2.5"/>
+    <path d="M31 16L28.4 48" stroke="url(#glassCore)" stroke-width="2.5"/>
+    <path d="M37.5 23L41.6 47L45.3 29L49.4 47L54.4 22.7" stroke="url(#glassCore)" stroke-width="2.5"/>
+  </g>
+
+  <g fill="#FFFFFF" fill-opacity="0.72" filter="url(#glow)">
+    <circle cx="19.8" cy="18.4" r="1.5"/>
+    <circle cx="30.6" cy="16.8" r="1.35"/>
+    <circle cx="54" cy="22.9" r="1.2"/>
+    <circle cx="42.1" cy="45.8" r="1.1"/>
+  </g>
+</svg>

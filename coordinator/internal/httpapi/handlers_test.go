@@ -320,6 +320,90 @@ func TestHandleEvents_SessionRequestCompletedByToken(t *testing.T) {
 	}
 }
 
+func TestHandleAgentsHeartbeat_IssuesAgentIDWhenMissing(t *testing.T) {
+	server := newTestServer(t)
+
+	heartbeatReq := map[string]any{
+		"name":   "issued-agent",
+		"status": "idle",
+		"meta": map[string]any{
+			"subscriptions": []string{"backend-domain"},
+		},
+	}
+	body, _ := json.Marshal(heartbeatReq)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/heartbeat", bytes.NewReader(body))
+	server.handleAgentsHeartbeat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]model.Agent
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	agent := resp["agent"]
+	if strings.TrimSpace(agent.ID) == "" {
+		t.Fatalf("expected server-issued agent id, got empty")
+	}
+	if agent.Name != "issued-agent" {
+		t.Fatalf("expected name issued-agent, got %q", agent.Name)
+	}
+}
+
+func TestHandleAgentBindPane_Success(t *testing.T) {
+	server := newTestServer(t)
+
+	// Create/register agent via heartbeat.
+	heartbeatReq := map[string]any{
+		"name":   "pane-bind-agent",
+		"status": "idle",
+	}
+	hbBody, _ := json.Marshal(heartbeatReq)
+	hbRec := httptest.NewRecorder()
+	hbHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/agents/heartbeat", bytes.NewReader(hbBody))
+	server.handleAgentsHeartbeat(hbRec, hbHTTPReq)
+	if hbRec.Code != http.StatusOK {
+		t.Fatalf("failed to heartbeat agent: %s", hbRec.Body.String())
+	}
+	var hbResp map[string]model.Agent
+	_ = json.NewDecoder(hbRec.Body).Decode(&hbResp)
+	agentID := hbResp["agent"].ID
+	if agentID == "" {
+		t.Fatalf("expected agent id from heartbeat")
+	}
+
+	bindReq := map[string]any{
+		"pane_id":      "%4",
+		"tmux_display": "claude-agent-1:0.0",
+		"session_name": "claude-agent-1",
+	}
+	bindBody, _ := json.Marshal(bindReq)
+	bindRec := httptest.NewRecorder()
+	bindHTTPReq := httptest.NewRequest(http.MethodPost, "/v1/agents/"+agentID+"/bind-pane", bytes.NewReader(bindBody))
+	bindHTTPReq.SetPathValue("id", agentID)
+	server.handleAgentBindPane(bindRec, bindHTTPReq)
+	if bindRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, bindRec.Code, bindRec.Body.String())
+	}
+
+	var bindResp map[string]model.Agent
+	if err := json.NewDecoder(bindRec.Body).Decode(&bindResp); err != nil {
+		t.Fatalf("decode bind response: %v", err)
+	}
+	agent := bindResp["agent"]
+	if fmt.Sprint(agent.Meta["pane_id"]) != "%4" {
+		t.Fatalf("expected pane_id %%4, got %+v", agent.Meta["pane_id"])
+	}
+	if fmt.Sprint(agent.Meta["tmux_display"]) != "claude-agent-1:0.0" {
+		t.Fatalf("expected tmux_display to be updated, got %+v", agent.Meta["tmux_display"])
+	}
+	if fmt.Sprint(agent.Meta["session_name"]) != "claude-agent-1" {
+		t.Fatalf("expected session_name to be updated, got %+v", agent.Meta["session_name"])
+	}
+}
+
 func TestHandleChainAssignAgent_RejectsWhenAgentNotSubscribed(t *testing.T) {
 	server := newTestServer(t)
 	ctx := context.Background()

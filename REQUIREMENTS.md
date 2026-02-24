@@ -36,6 +36,8 @@
 
 ### 4.2 웹뷰 대시보드 (배포형)
 - 인터넷에서 접근 가능한 웹 UI 제공
+- 웹 UI(landing/dashboard/auth)는 공통 파비콘(`favicon_1.svg`)을 표시해야 한다.
+- 랜딩 페이지에서 네비게이션 로고 클릭(상단 이동)과 Hero `Install Agent` 버튼 클릭(Quick Start 이동) 스크롤 애니메이션 속도는 기존 대비 80%(20% 감속)로 동작해야 한다.
 - 현재 활성 에이전트 수 표시
 - 에이전트 목록 응답(`GET /v1/agents`, `GET /v1/dashboard`)은 기본적으로 에이전트 이름 오름차순으로 정렬되어야 한다. (리렌더링 시 순서 안정성)
 - 에이전트별 상태 및 현재 작업 표시
@@ -128,7 +130,7 @@
   4. 세션이 성공적으로 설정되면 에이전트는 일반 작업 모드로 전환되고, `request_claude_session` 태스크는 자동으로 완료 처리된다.
   5. `request_claude_session` 완료 처리는 일반 `task.completed` 이벤트와 분리된 전용 이벤트(`agent.automation.session_request.completed`)로 수행한다.
      - Coordinator는 세션 요청 태스크 생성 시 `agent_session_request_token`을 함께 발급한다.
-     - Agent는 세션 할당/자동 실행이 완료되면 전용 이벤트 payload에 canonical 키 `agent_session_request_token`만 포함해 전송한다.
+     - Agent는 세션 할당/자동 실행이 완료되면 전용 이벤트 payload에 표준 키 `agent_session_request_token`만 포함해 전송한다.
      - Coordinator는 `agent_session_request_token`(및 선택적으로 `task_id`)으로 대상 세션 요청 태스크를 식별하여 `done`으로 전이한다.
      - 전용 완료 이벤트 처리 시 task 상태 전이가 실패하면 성공으로 무시하지 않고 명시적으로 에러를 반환한다.
 
@@ -157,6 +159,27 @@
 - 프로토콜: NDJSON (newline-delimited JSON), 모든 메시지에 `type`과 `id` 포함
 - 소켓 경로: `$XDG_RUNTIME_DIR/clwclw/agentd.sock` 또는 `~/.clwclw/run/agentd.sock`
 - 싱글턴 보장: `agentd.pid` lock file로 중복 실행 방지
+
+### 4.12 Agent 식별자 수명주기 (Heartbeat 발급 + Pane 바인딩)
+- Agent 등록과 heartbeat를 분리된 개념으로 취급하되, 초기 등록 트리거는 `POST /v1/agents/heartbeat`로 통일한다.
+- Agent가 heartbeat 요청에서 `agent_id`를 비워 보내면 Coordinator는 신규 agent를 등록하고 server-issued `agent_id`를 발급해 응답한다.
+- Agent는 heartbeat 응답으로 받은 server-issued `agent_id`를 전역 메모리(프로세스 내 source of truth)로 유지한다.
+- `AGENT_STATE_DIR`(pane별 상태 디렉터리) 변경은 `agent_id`를 바꾸지 않아야 한다.
+- Agent가 tmux `pane_id`를 확보한 시점에 `POST /v1/agents/{id}/bind-pane`로 `agent_id`와 `pane_id`를 명시적으로 바인딩한다.
+- 바인딩 이전/이후를 포함해 heartbeat는 주기적으로 계속 전송되어야 하며, 이벤트 업로드는 server-issued `agent_id`만 사용해야 한다.
+
+### 4.13 Go 테스트 가이드라인 및 유스케이스 회귀 테스트
+- 원본 기능 코드는 변경하지 않고, 테스트/문서만으로 품질 기준을 강화한다.
+- `docs/`에 Go 웹앱 서버 테스트 가이드라인 문서를 추가하고, 핵심 원칙(TDD, table-driven, BDD 시나리오 표기, 테스트 계층 분리)을 간결히 명시한다.
+- BDD는 기본 표기 규칙(`Given-When-Then`)으로 채택해 테스트 시나리오 이름/케이스 문서화에 반영한다.
+- `USECASES.md`의 Coordinator 핵심 유스케이스(health, agents heartbeat/list, channels/tasks/chains, claim/assign/complete/fail, task inputs, events, dashboard)에 대해 회귀 방지 테스트 케이스와 Go 테스트 코드를 제공한다.
+
+### 4.14 JavaScript 클라이언트 브릿지 BDD 테스트 가이드라인
+- `docs/`에 JavaScript 클라이언트 브릿지(특히 `agent/clw-agent.js` 계열) 테스트 가이드라인 문서를 추가한다.
+- 테스트 작성 기본은 BDD(`Given-When-Then`) 시나리오 표기 규칙을 사용하고, 구현은 TDD(red-green-refactor) 루프를 따른다.
+- 테스트 계층을 `unit / contract / integration / e2e`로 분리하고, 각 계층의 목적/범위/실패 기준을 명시한다.
+- 브릿지 코드는 프로토콜(core)과 I/O 어댑터(fs/http/tmux/process)를 분리해 테스트 가능성을 우선 설계 원칙으로 둔다.
+- 권장 테스트 도구 조합(러너, mock/stub, API mock, E2E, property-based, mutation testing)과 도입 순서를 문서에 포함한다.
 
 ## 5. 비기능 요구사항
 - **경량 인프라** 지향 (최소 비용)

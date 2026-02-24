@@ -256,6 +256,95 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"agent": agent})
 }
 
+type bindAgentPaneRequest struct {
+	PaneID      string `json:"pane_id"`
+	TmuxDisplay string `json:"tmux_display"`
+	SessionName string `json:"session_name"`
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if src == nil {
+		return map[string]any{}
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (s *Server) handleAgentBindPane(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+
+	agentID := strings.TrimSpace(r.PathValue("id"))
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id_required", "agent ID is required")
+		return
+	}
+
+	var req bindAgentPaneRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", "invalid json")
+		return
+	}
+
+	paneID := strings.TrimSpace(req.PaneID)
+	if paneID == "" {
+		writeError(w, http.StatusBadRequest, "pane_id_required", "pane_id is required")
+		return
+	}
+
+	userID := userIDFromContext(r.Context())
+
+	agent, err := s.store.GetAgent(r.Context(), agentID)
+	if err != nil {
+		if err == store.ErrNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "agent not found")
+			return
+		}
+		slog.Error("failed to get agent for pane bind", "agent_id", agentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "failed to get agent")
+		return
+	}
+
+	if agent.UserID != userID {
+		writeError(w, http.StatusNotFound, "not_found", "agent not found")
+		return
+	}
+
+	meta := cloneAnyMap(agent.Meta)
+	meta["pane_id"] = paneID
+	if tmuxDisplay := strings.TrimSpace(req.TmuxDisplay); tmuxDisplay != "" {
+		meta["tmux_display"] = tmuxDisplay
+	}
+	if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
+		meta["session_name"] = sessionName
+		meta["tmux_session"] = sessionName
+	}
+
+	updated, err := s.store.UpsertAgent(r.Context(), model.Agent{
+		ID:            agent.ID,
+		UserID:        agent.UserID,
+		Name:          agent.Name,
+		Status:        agent.Status,
+		ClaudeStatus:  agent.ClaudeStatus,
+		CurrentTaskID: agent.CurrentTaskID,
+		Meta:          meta,
+	})
+	if err != nil {
+		slog.Error("failed to bind pane to agent", "agent_id", agentID, "pane_id", paneID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "failed to bind pane to agent")
+		return
+	}
+
+	s.bus.Publish(EventAgents, userID)
+	s.invalidateDashboardCache()
+	writeJSON(w, http.StatusOK, map[string]any{"agent": updated})
+}
+
 type updateAgentChannelsRequest struct {
 	Subscriptions []string `json:"subscriptions"`
 }
@@ -1162,6 +1251,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err == store.ErrConflict {
 				// idempotency: event already exists; treat as success.
 				writeJSON(w, http.StatusOK, map[string]any{"deduped": true})
+				return
+			}
+			if err == store.ErrNotFound {
+				writeError(w, http.StatusNotFound, "not_found", "agent not found")
 				return
 			}
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())

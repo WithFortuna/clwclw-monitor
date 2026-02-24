@@ -4,6 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>clwclw.monitor - Claude Code Orchestrator</title>
+    <link rel="shortcut icon" href="/favicon.ico?v=20260220" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=20260220" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=20260220" />
+    <link rel="icon" type="image/svg+xml" href="/favicon_1.svg?v=20260220" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=20260220" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
@@ -509,7 +514,7 @@
 
     <!-- NAV -->
     <nav class="nav">
-      <a href="#" class="nav-logo" onclick="window.scrollTo({top:0,behavior:'smooth'});return false;">clwclw<span>.</span>monitor</a>
+      <a href="#" class="nav-logo" onclick="return scrollTopAtReducedSpeed();">clwclw<span>.</span>monitor</a>
       <div class="nav-actions">
         <a href="#features" class="nav-link">Features</a>
         <a href="#quickstart" class="nav-link">Quick Start</a>
@@ -537,7 +542,7 @@
         <button class="btn-large btn-primary" onclick="openAuth('register')">
           Get Started
         </button>
-        <button class="btn-large btn-outline" onclick="document.getElementById('quickstart').scrollIntoView({behavior:'smooth'})">
+        <button class="btn-large btn-outline" onclick="return scrollToSectionAtReducedSpeed('quickstart');">
           Install Agent
         </button>
       </div>
@@ -747,6 +752,76 @@
     </div>
 
     <script>
+      // --- Controlled scroll speed (80% of previous speed) ---
+      const LANDING_SCROLL_SPEED_RATIO = 0.8;
+      let activeLandingScroll = null;
+
+      function stopActiveLandingScroll() {
+        if (!activeLandingScroll) return;
+        cancelAnimationFrame(activeLandingScroll.rafId);
+        document.documentElement.style.scrollBehavior = activeLandingScroll.prevBehavior;
+        activeLandingScroll = null;
+      }
+
+      function scrollToYAtReducedSpeed(targetY) {
+        stopActiveLandingScroll();
+
+        const startY = window.scrollY || window.pageYOffset;
+        const deltaY = targetY - startY;
+        if (Math.abs(deltaY) < 1) return false;
+
+        const distance = Math.abs(deltaY);
+        const baseDurationMs = Math.min(900, Math.max(280, distance * 0.45));
+        const durationMs = Math.round(baseDurationMs / LANDING_SCROLL_SPEED_RATIO);
+        const startedAt = performance.now();
+        const prevBehavior = document.documentElement.style.scrollBehavior;
+
+        document.documentElement.style.scrollBehavior = 'auto';
+
+        const easeInOutCubic = (t) => (
+          t < 0.5
+            ? 4 * t * t * t
+            : 1 - Math.pow(-2 * t + 2, 3) / 2
+        );
+
+        const finish = () => {
+          document.documentElement.style.scrollBehavior = prevBehavior;
+          activeLandingScroll = null;
+        };
+
+        const step = (now) => {
+          const elapsed = now - startedAt;
+          const progress = Math.min(elapsed / durationMs, 1);
+          const eased = easeInOutCubic(progress);
+
+          window.scrollTo(0, startY + (deltaY * eased));
+
+          if (progress < 1) {
+            activeLandingScroll.rafId = requestAnimationFrame(step);
+            return;
+          }
+          finish();
+        };
+
+        activeLandingScroll = {
+          prevBehavior,
+          rafId: requestAnimationFrame(step),
+        };
+
+        return false;
+      }
+
+      function scrollTopAtReducedSpeed() {
+        return scrollToYAtReducedSpeed(0);
+      }
+
+      function scrollToSectionAtReducedSpeed(sectionId) {
+        const section = document.getElementById(sectionId);
+        if (!section) return false;
+        const targetY = section.getBoundingClientRect().top + window.scrollY;
+        return scrollToYAtReducedSpeed(targetY);
+      }
+
       // --- Copy install command ---
       function copyInstall(el) {
         navigator.clipboard.writeText('npm i -g @clwclw-monitor/agent').then(() => {

@@ -32,6 +32,10 @@ func (s *Server) registerUI() {
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			r.URL.Path = "/landing.html"
+		} else if r.URL.Path == "/dashboard" {
+			r.URL.Path = "/dashboard.html"
+		} else if r.URL.Path == "/agent-auth" {
+			r.URL.Path = "/agent-auth.html"
 		}
 		fileServer.ServeHTTP(w, r)
 	})

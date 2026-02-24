@@ -78,6 +78,7 @@ function loadDotEnvIfPresent(filePath) {
 
 /** Per-process deploy mode. Set at startup by login/work command. */
 let _deployMode = null; // 'local' | 'prod' | null
+let _currentAgentId = (process.env.AGENT_ID || '').trim();
 
 function getDeployMode() {
   if (_deployMode) return _deployMode;
@@ -114,7 +115,7 @@ function usage() {
 Env:
   COORDINATOR_URL          default: http://localhost:8080 (also persisted per mode)
   COORDINATOR_AUTH_TOKEN   optional
-  AGENT_ID                 optional (persisted to agent/{mode}/data/agent-id.txt)
+  AGENT_ID                 optional process-level override (otherwise issued by heartbeat)
   AGENT_NAME               optional (default: hostname)
   AGENT_MODE               optional: "local" or "prod" (set during login, persisted)
   AGENT_CHANNELS           optional (comma-separated subscriptions; e.g. "backend-domain,notify")
@@ -202,27 +203,22 @@ function agentDataDir() {
   return path.join(root, mode, 'data');
 }
 
-function getOrCreateAgentId() {
-  const fromEnv = (process.env.AGENT_ID || '').trim();
-  if (fromEnv) return fromEnv;
+function getCurrentAgentId() {
+  return String(_currentAgentId || '').trim();
+}
 
-  const dir = agentDataDir();
-  const file = path.join(dir, 'agent-id.txt');
-  try {
-    if (fs.existsSync(file)) {
-      const id = fs.readFileSync(file, 'utf8').trim();
-      if (id) return id;
-    }
-  } catch {
-    // ignore
+function setCurrentAgentId(agentId) {
+  const id = String(agentId || '').trim();
+  if (!id) return '';
+  _currentAgentId = id;
+  return id;
+}
+
+function requireCurrentAgentId(op = 'operation') {
+  const id = getCurrentAgentId();
+  if (!id) {
+    throw new Error(`${op} requires registered agent_id (heartbeat registration not completed yet)`);
   }
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const id = uuidv4();
-  fs.writeFileSync(file, id + '\n', 'utf8');
   return id;
 }
 
@@ -560,11 +556,11 @@ async function postJsonResult(pathname, body) {
 }
 
 async function heartbeat(status = 'idle', currentTaskId = '', meta = {}) {
-  const agentId = getOrCreateAgentId();
+  const agentId = getCurrentAgentId();
   const tmuxSession = detectTmuxSession();
   const extraSubs = Array.isArray(meta?.subscriptions) ? meta.subscriptions : [];
   const payload = {
-    agent_id: agentId,
+    agent_id: agentId, // May be empty on first registration; server issues agent_id.
     name: agentName(),
     claude_status: status,  // NEW: Explicit Claude execution state
     status: status,          // Legacy: Keep for backward compatibility
@@ -579,11 +575,16 @@ async function heartbeat(status = 'idle', currentTaskId = '', meta = {}) {
       subscriptions: agentSubscriptions(extraSubs),
     },
   };
-  return postJson('/v1/agents/heartbeat', payload);
+  const body = await postJson('/v1/agents/heartbeat', payload);
+  const serverIssuedAgentID = String(body?.agent?.id || '').trim();
+  if (serverIssuedAgentID) {
+    setCurrentAgentId(serverIssuedAgentID);
+  }
+  return body;
 }
 
 async function emitEvent(type, payload, idempotencyKey = '', taskId = '') {
-  const agentId = getOrCreateAgentId();
+  const agentId = requireCurrentAgentId('emitEvent');
   return postJson('/v1/events', {
     agent_id: agentId,
     task_id: String(taskId || '').trim(),
@@ -591,6 +592,25 @@ async function emitEvent(type, payload, idempotencyKey = '', taskId = '') {
     payload,
     idempotency_key: idempotencyKey,
   });
+}
+
+async function bindPaneToAgent(paneId, tmuxDisplay = '', sessionName = '') {
+  const agentId = requireCurrentAgentId('bindPaneToAgent');
+  const payload = {
+    pane_id: String(paneId || '').trim(),
+    tmux_display: String(tmuxDisplay || '').trim(),
+    session_name: String(sessionName || '').trim(),
+  };
+  if (!payload.pane_id) {
+    throw new Error('bindPaneToAgent requires pane_id');
+  }
+
+  const body = await postJson(`/v1/agents/${encodeURIComponent(agentId)}/bind-pane`, payload);
+  const serverIssuedAgentID = String(body?.agent?.id || '').trim();
+  if (serverIssuedAgentID) {
+    setCurrentAgentId(serverIssuedAgentID);
+  }
+  return body?.agent || null;
 }
 
 function runLegacyHook(type) {
@@ -613,7 +633,8 @@ function runLegacyHook(type) {
 
 async function fetchCurrentTaskFromCoordinator() {
   try {
-    const agentId = getOrCreateAgentId();
+    const agentId = getCurrentAgentId();
+    if (!agentId) return null;
     const result = await getJson(`/v1/agents/${agentId}/current-task`);
     return result?.task || null;
   } catch (err) {
@@ -974,7 +995,7 @@ async function hookDirectCoordinator(type, detectedPaneId, detectedTarget) {
   console.log(`[agent] claude.hook event emitted`);
 
   if (type === 'completed') {
-    const agentId = getOrCreateAgentId();
+    const agentId = getCurrentAgentId();
     console.log(`[agent] hook completed: agent_id=${agentId}, coordinator=${coordinatorBaseUrl()}`);
 
     console.log(`[agent] Fetching current task from coordinator...`);
@@ -1329,7 +1350,7 @@ function parseFlag(args, name) {
 }
 
 async function claimTask(channelName, idempotencyKey = '') {
-  const agentId = getOrCreateAgentId();
+  const agentId = requireCurrentAgentId('claimTask');
   const res = await postJsonResult('/v1/tasks/claim', {
     agent_id: agentId,
     channel: channelName,
@@ -1342,7 +1363,7 @@ async function claimTask(channelName, idempotencyKey = '') {
 }
 
 async function completeTask(taskId) {
-  const agentId = getOrCreateAgentId();
+  const agentId = requireCurrentAgentId('completeTask');
   const res = await postJsonResult('/v1/tasks/complete', {
     task_id: taskId,
     agent_id: agentId,
@@ -1372,7 +1393,7 @@ async function completeTask(taskId) {
 }
 
 async function failTask(taskId, reason = '') {
-  const agentId = getOrCreateAgentId();
+  const agentId = requireCurrentAgentId('failTask');
   const res = await postJsonResult('/v1/tasks/fail', {
     task_id: taskId,
     agent_id: agentId,
@@ -1387,7 +1408,7 @@ async function failTask(taskId, reason = '') {
 }
 
 async function claimTaskInput(taskId) {
-  const agentId = getOrCreateAgentId();
+  const agentId = requireCurrentAgentId('claimTaskInput');
   const res = await postJsonResult('/v1/tasks/inputs/claim', {
     task_id: taskId,
     agent_id: agentId,
@@ -2154,9 +2175,19 @@ async function startWorkLoop(channels, initialTarget) {
     }
     console.log(`[agent] attached to initial pane: pane_id=${tmuxPaneId} (from target: ${initialTarget})`);
 
+    await heartbeat('idle', '', {
+      pane_id: tmuxPaneId,
+      tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId,
+      subscriptions: channels,
+      work_channels: channels,
+    });
+    await bindPaneToAgent(tmuxPaneId, getPaneTarget(tmuxPaneId) || tmuxPaneId, tmuxSession).catch((err) => {
+      console.error(`[agent] bind-pane failed (ignored): ${String(err?.message || err)}`);
+    });
+
     // Register with agentd for IPC hook routing
     ensureAgentdRunning();
-    agentdSocket = await connectToAgentd(tmuxPaneId, getOrCreateAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
+    agentdSocket = await connectToAgentd(tmuxPaneId, getCurrentAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
     if (agentdSocket) {
       setupAgentdListener(agentdSocket, initialTarget, tmuxPaneId, channels);
       agentdSocket.on('close', () => { agentdSocket = null; });
@@ -2179,7 +2210,8 @@ async function startWorkLoop(channels, initialTarget) {
     if (!shouldPoll) return;
 
     try {
-      const agentId = getOrCreateAgentId();
+      const agentId = getCurrentAgentId();
+      if (!agentId) return;
       const serverAgent = await getJson(`/v1/agents/${agentId}`);
       const serverSubs = Array.isArray(serverAgent?.agent?.meta?.subscriptions)
         ? serverAgent.agent.meta.subscriptions.filter(Boolean).sort()
@@ -2203,6 +2235,12 @@ async function startWorkLoop(channels, initialTarget) {
     // Regular tasks are left in the queue for other agents.
     // On receiving a session request: auto-creates tmux + claude code.
     if (!tmuxTarget) {
+      await heartbeat('idle', '', {
+        subscriptions: channels,
+        work_channels: channels,
+        state: 'setup_waiting',
+      });
+
       // Poll for channel updates from server (UI may have assigned channels)
       await pollChannelsFromServer();
 
@@ -2234,17 +2272,12 @@ async function startWorkLoop(channels, initialTarget) {
       }
 
       if (!sessionTask) {
-        await heartbeat('idle', '', {
-          subscriptions: channels,
-          work_channels: channels,
-          state: 'setup_waiting',
-        });
         await sleep(pollSec * 1000);
         continue;
       }
 
       // Assign the session request task to self
-      const agentId = getOrCreateAgentId();
+      const agentId = requireCurrentAgentId('assign request_claude_session');
       try {
         await postJson('/v1/tasks/assign', {
           task_id: sessionTask.id,
@@ -2283,11 +2316,20 @@ async function startWorkLoop(channels, initialTarget) {
       }
 
       console.log(`[agent] tmux session ready: pane_id=${tmuxPaneId} session=${sessionName}`);
+      await heartbeat('idle', '', {
+        pane_id: tmuxPaneId,
+        tmux_display: getPaneTarget(tmuxPaneId) || tmuxPaneId,
+        subscriptions: channels,
+        work_channels: channels,
+      });
+      await bindPaneToAgent(tmuxPaneId, getPaneTarget(tmuxPaneId) || tmuxPaneId, sessionName).catch((err) => {
+        console.error(`[agent] bind-pane failed (ignored): ${String(err?.message || err)}`);
+      });
       await emitEvent('agent.automation.target_set', { pane_id: tmuxPaneId, session_name: sessionName });
 
       // Register with agentd for IPC hook routing
       ensureAgentdRunning();
-      agentdSocket = await connectToAgentd(tmuxPaneId, getOrCreateAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
+      agentdSocket = await connectToAgentd(tmuxPaneId, getCurrentAgentId(), getDeployMode(), coordinatorBaseUrl(), channels);
       if (agentdSocket) {
         setupAgentdListener(agentdSocket, sessionName, tmuxPaneId, channels);
         agentdSocket.on('close', () => { agentdSocket = null; });
@@ -2492,6 +2534,13 @@ async function main() {
   }
 
   if (cmd === 'setup') {
+    const claudeDir = path.join(process.cwd(), '.claude');
+    if (!fs.existsSync(claudeDir)) {
+      console.error(`[agent] .claude 디렉토리를 찾을 수 없습니다: ${process.cwd()}`);
+      console.error('[agent] Claude Code 프로젝트 루트 디렉토리에서 실행해 주세요.');
+      process.exit(1);
+    }
+
     const legacyDir = getRemotePath();
     if (!legacyDir) {
       console.error('[agent] Claude-Code-Remote not found.');
@@ -2505,7 +2554,7 @@ async function main() {
     }
     const child = require('child_process').spawn('node', [setupPath], {
       stdio: 'inherit',
-      cwd: legacyDir,
+      cwd: process.cwd(),
       env: process.env,
     });
     child.on('exit', (code) => process.exit(code ?? 0));

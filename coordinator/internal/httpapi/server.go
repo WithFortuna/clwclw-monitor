@@ -51,6 +51,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/agents/request-session", s.handleAgentsRequestSession)
 	s.mux.HandleFunc("GET /v1/agents/{id}/current-task", s.handleAgentCurrentTask)
 	s.mux.HandleFunc("GET /v1/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("POST /v1/agents/{id}/bind-pane", s.handleAgentBindPane)
 	s.mux.HandleFunc("PATCH /v1/agents/{id}/channels", s.handleAgentUpdateChannels)
 	s.mux.HandleFunc("GET /v1/agents", s.handleAgentsList)
 
