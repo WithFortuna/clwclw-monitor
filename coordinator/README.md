@@ -90,7 +90,7 @@ go test -v ./internal/store/memory/...
 
 요청/응답 스키마는 `coordinator/internal/httpapi/handlers.go`의 DTO를 기준으로 합니다.
 
-`POST /v1/agents/heartbeat`는 `agent_id`가 비어 있으면 신규 agent를 생성하고 canonical `agent.id`를 응답합니다.
+`POST /v1/agents/heartbeat`는 `agent_id`가 비어 있으면 신규 agent를 생성하고 server-issued `agent.id`를 응답합니다.
 
 ## Idempotency (MVP)
 
