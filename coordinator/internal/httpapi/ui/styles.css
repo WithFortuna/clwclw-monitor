@@ -214,6 +214,35 @@ body {
   flex-direction: column;
   gap: 16px;
 }
+.setup-runtime-card {
+  margin-bottom: 16px;
+}
+.setup-runtime-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.setup-runtime-block {
+  background: var(--panel2);
+  border: 1.2px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+.setup-runtime-block h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.setup-runtime-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .setup-page-card {
   background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
   border: 1.2px solid var(--border);
