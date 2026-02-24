@@ -78,8 +78,7 @@ function loadDotEnvIfPresent(filePath) {
 
 /** Per-process deploy mode. Set at startup by login/work command. */
 let _deployMode = null; // 'local' | 'prod' | null
-let _currentAgentId = '';
-let _agentIdLoaded = false;
+let _currentAgentId = (process.env.AGENT_ID || '').trim();
 
 function getDeployMode() {
   if (_deployMode) return _deployMode;
@@ -94,9 +93,6 @@ function setDeployMode(mode) {
     throw new Error(`Invalid deploy mode: ${mode} (must be 'local' or 'prod')`);
   }
   _deployMode = mode;
-  // Mode switch changes modeDataDir; reload persisted agent id lazily.
-  _currentAgentId = '';
-  _agentIdLoaded = false;
 }
 
 function usage() {
@@ -119,7 +115,7 @@ function usage() {
 Env:
   COORDINATOR_URL          default: http://localhost:8080 (also persisted per mode)
   COORDINATOR_AUTH_TOKEN   optional
-  AGENT_ID                 optional legacy override (canonical ID is issued/confirmed by heartbeat)
+  AGENT_ID                 optional process-level override (otherwise issued by heartbeat)
   AGENT_NAME               optional (default: hostname)
   AGENT_MODE               optional: "local" or "prod" (set during login, persisted)
   AGENT_CHANNELS           optional (comma-separated subscriptions; e.g. "backend-domain,notify")
@@ -207,48 +203,14 @@ function agentDataDir() {
   return path.join(root, mode, 'data');
 }
 
-function agentIDFilePath() {
-  return path.join(modeDataDir(), 'agent-id.txt');
-}
-
-function loadAgentIdIfNeeded() {
-  if (_agentIdLoaded) return;
-  _agentIdLoaded = true;
-
-  const fromEnv = (process.env.AGENT_ID || '').trim();
-  if (fromEnv) {
-    _currentAgentId = fromEnv;
-    return;
-  }
-
-  const file = agentIDFilePath();
-  try {
-    if (fs.existsSync(file)) {
-      const id = fs.readFileSync(file, 'utf8').trim();
-      if (id) _currentAgentId = id;
-    }
-  } catch {
-    // ignore
-  }
-}
-
 function getCurrentAgentId() {
-  loadAgentIdIfNeeded();
   return String(_currentAgentId || '').trim();
 }
 
-function persistCurrentAgentId(agentId) {
+function setCurrentAgentId(agentId) {
   const id = String(agentId || '').trim();
   if (!id) return '';
   _currentAgentId = id;
-  _agentIdLoaded = true;
-  try {
-    const dir = modeDataDir();
-    ensureDir(dir);
-    fs.writeFileSync(agentIDFilePath(), id + '\n', 'utf8');
-  } catch {
-    // best-effort persistence
-  }
   return id;
 }
 
@@ -598,7 +560,7 @@ async function heartbeat(status = 'idle', currentTaskId = '', meta = {}) {
   const tmuxSession = detectTmuxSession();
   const extraSubs = Array.isArray(meta?.subscriptions) ? meta.subscriptions : [];
   const payload = {
-    agent_id: agentId, // May be empty on first registration; server issues canonical ID.
+    agent_id: agentId, // May be empty on first registration; server issues agent_id.
     name: agentName(),
     claude_status: status,  // NEW: Explicit Claude execution state
     status: status,          // Legacy: Keep for backward compatibility
@@ -614,9 +576,9 @@ async function heartbeat(status = 'idle', currentTaskId = '', meta = {}) {
     },
   };
   const body = await postJson('/v1/agents/heartbeat', payload);
-  const issuedID = String(body?.agent?.id || '').trim();
-  if (issuedID) {
-    persistCurrentAgentId(issuedID);
+  const serverIssuedAgentID = String(body?.agent?.id || '').trim();
+  if (serverIssuedAgentID) {
+    setCurrentAgentId(serverIssuedAgentID);
   }
   return body;
 }
@@ -644,9 +606,9 @@ async function bindPaneToAgent(paneId, tmuxDisplay = '', sessionName = '') {
   }
 
   const body = await postJson(`/v1/agents/${encodeURIComponent(agentId)}/bind-pane`, payload);
-  const canonicalID = String(body?.agent?.id || '').trim();
-  if (canonicalID) {
-    persistCurrentAgentId(canonicalID);
+  const serverIssuedAgentID = String(body?.agent?.id || '').trim();
+  if (serverIssuedAgentID) {
+    setCurrentAgentId(serverIssuedAgentID);
   }
   return body?.agent || null;
 }

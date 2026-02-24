@@ -130,7 +130,7 @@
   4. 세션이 성공적으로 설정되면 에이전트는 일반 작업 모드로 전환되고, `request_claude_session` 태스크는 자동으로 완료 처리된다.
   5. `request_claude_session` 완료 처리는 일반 `task.completed` 이벤트와 분리된 전용 이벤트(`agent.automation.session_request.completed`)로 수행한다.
      - Coordinator는 세션 요청 태스크 생성 시 `agent_session_request_token`을 함께 발급한다.
-     - Agent는 세션 할당/자동 실행이 완료되면 전용 이벤트 payload에 canonical 키 `agent_session_request_token`만 포함해 전송한다.
+     - Agent는 세션 할당/자동 실행이 완료되면 전용 이벤트 payload에 표준 키 `agent_session_request_token`만 포함해 전송한다.
      - Coordinator는 `agent_session_request_token`(및 선택적으로 `task_id`)으로 대상 세션 요청 태스크를 식별하여 `done`으로 전이한다.
      - 전용 완료 이벤트 처리 시 task 상태 전이가 실패하면 성공으로 무시하지 않고 명시적으로 에러를 반환한다.
 
@@ -162,11 +162,11 @@
 
 ### 4.12 Agent 식별자 수명주기 (Heartbeat 발급 + Pane 바인딩)
 - Agent 등록과 heartbeat를 분리된 개념으로 취급하되, 초기 등록 트리거는 `POST /v1/agents/heartbeat`로 통일한다.
-- Agent가 heartbeat 요청에서 `agent_id`를 비워 보내면 Coordinator는 신규 agent를 등록하고 canonical `agent_id`를 발급해 응답한다.
-- Agent는 heartbeat 응답으로 받은 canonical `agent_id`를 전역 메모리(프로세스 내 source of truth)로 유지하고, 재시작 복구용으로 mode root 데이터 경로에 저장한다.
+- Agent가 heartbeat 요청에서 `agent_id`를 비워 보내면 Coordinator는 신규 agent를 등록하고 server-issued `agent_id`를 발급해 응답한다.
+- Agent는 heartbeat 응답으로 받은 server-issued `agent_id`를 전역 메모리(프로세스 내 source of truth)로 유지한다.
 - `AGENT_STATE_DIR`(pane별 상태 디렉터리) 변경은 `agent_id`를 바꾸지 않아야 한다.
 - Agent가 tmux `pane_id`를 확보한 시점에 `POST /v1/agents/{id}/bind-pane`로 `agent_id`와 `pane_id`를 명시적으로 바인딩한다.
-- 바인딩 이전/이후를 포함해 heartbeat는 주기적으로 계속 전송되어야 하며, 이벤트 업로드는 canonical `agent_id`만 사용해야 한다.
+- 바인딩 이전/이후를 포함해 heartbeat는 주기적으로 계속 전송되어야 하며, 이벤트 업로드는 server-issued `agent_id`만 사용해야 한다.
 
 ### 4.13 Go 테스트 가이드라인 및 유스케이스 회귀 테스트
 - 원본 기능 코드는 변경하지 않고, 테스트/문서만으로 품질 기준을 강화한다.
