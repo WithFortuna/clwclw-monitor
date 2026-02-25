@@ -513,7 +513,8 @@ async function main() {
     const savedEnvPath = writeEnvFile(envValues, existingEnv);
     console.log('\n' + success(`${i18n.envSaved} ${savedEnvPath}`));
 
-    const updateHooks = await askYesNo(i18n.updateHooks, true);
+    const pendingSettingsPath = path.join(process.cwd(), '.claude', 'settings.local.json');
+    const updateHooks = await askYesNo(i18n.updateHooks.replace('{settingsPath}', pendingSettingsPath), true);
     if (updateHooks) {
         const { settingsPath, existing, backupPath } = ensureHooksFile();
         if (backupPath) {

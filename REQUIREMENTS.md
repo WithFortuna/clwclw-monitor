@@ -38,6 +38,7 @@
 - 인터넷에서 접근 가능한 웹 UI 제공
 - 웹 UI(landing/dashboard/auth)는 공통 파비콘(`favicon_1.svg`)을 표시해야 한다.
 - 랜딩 페이지에서 네비게이션 로고 클릭(상단 이동)과 Hero `Install Agent` 버튼 클릭(Quick Start 이동) 스크롤 애니메이션 속도는 기존 대비 80%(20% 감속)로 동작해야 한다.
+- Setup Guide 화면에는 현재 지원 환경 스펙을 명시해야 한다.
 - 현재 활성 에이전트 수 표시
 - 에이전트 목록 응답(`GET /v1/agents`, `GET /v1/dashboard`)은 기본적으로 에이전트 이름 오름차순으로 정렬되어야 한다. (리렌더링 시 순서 안정성)
 - 에이전트별 상태 및 현재 작업 표시
@@ -180,6 +181,14 @@
 - 테스트 계층을 `unit / contract / integration / e2e`로 분리하고, 각 계층의 목적/범위/실패 기준을 명시한다.
 - 브릿지 코드는 프로토콜(core)과 I/O 어댑터(fs/http/tmux/process)를 분리해 테스트 가능성을 우선 설계 원칙으로 둔다.
 - 권장 테스트 도구 조합(러너, mock/stub, API mock, E2E, property-based, mutation testing)과 도입 순서를 문서에 포함한다.
+
+### 4.15 Hook 전달 보장 (Durable Queue + IPC/Pull 이중 경로)
+- `hook completed|waiting` 이벤트는 먼저 디스크 기반 durable queue에 저장되어야 하며, 프로세스 재시작 후에도 유실 없이 복구되어야 한다.
+- queue 저장 경로는 모노레포 실행/`npm` 설치 실행 모두 동일 규칙으로 계산되어야 한다 (`modeDataDir()` 기반).
+- `agentd`가 살아있을 때는 기존 IPC push 경로로 즉시 전달을 시도하되, 전달 성공 기준(`delivery_ack`)과 업무 처리 결과(`business_result`)는 분리해 취급한다.
+- `agentd`가 내려가 있거나 worker IPC 연결이 끊긴 상태에서도 worker가 pane_id 기준 queue pull로 이벤트를 가져가 처리할 수 있어야 한다.
+- worker는 agentd 연결 종료 시 자동 재연결(backoff)해야 하며, 재등록 시 backlog replay를 요청/수신할 수 있어야 한다.
+- queue 항목은 `delivery_id` 기반 idempotency를 가져야 하며, 중복 전달 시에도 완료 훅 처리가 안전해야 한다.
 
 ## 5. 비기능 요구사항
 - **경량 인프라** 지향 (최소 비용)

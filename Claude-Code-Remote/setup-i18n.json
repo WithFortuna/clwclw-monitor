@@ -63,7 +63,7 @@
       "webhookPort": "LINE webhook port"
     },
     "envSaved": ".env saved to",
-    "updateHooks": "Update ~/.claude/settings.json hooks now? (recommended)",
+    "updateHooks": "Update hooks in {settingsPath} now? (recommended)",
     "hooksUpdated": "Hooks updated at",
     "hooksCreated": "Hooks created at",
     "hooksSkipped": "Skipped hook setup. Add hooks manually if needed.",
@@ -137,7 +137,7 @@
       "webhookPort": "LINE webhook 端口"
     },
     "envSaved": ".env 已保存到",
-    "updateHooks": "现在更新 ~/.claude/settings.json 钩子吗？（推荐）",
+    "updateHooks": "现在更新 {settingsPath} 钩子吗？（推荐）",
     "hooksUpdated": "钩子已更新",
     "hooksCreated": "钩子已创建",
     "hooksSkipped": "跳过钩子设置。如需要请手动添加钩子。",
