@@ -182,6 +182,14 @@
 - 브릿지 코드는 프로토콜(core)과 I/O 어댑터(fs/http/tmux/process)를 분리해 테스트 가능성을 우선 설계 원칙으로 둔다.
 - 권장 테스트 도구 조합(러너, mock/stub, API mock, E2E, property-based, mutation testing)과 도입 순서를 문서에 포함한다.
 
+### 4.15 Hook 전달 보장 (Durable Queue + IPC/Pull 이중 경로)
+- `hook completed|waiting` 이벤트는 먼저 디스크 기반 durable queue에 저장되어야 하며, 프로세스 재시작 후에도 유실 없이 복구되어야 한다.
+- queue 저장 경로는 모노레포 실행/`npm` 설치 실행 모두 동일 규칙으로 계산되어야 한다 (`modeDataDir()` 기반).
+- `agentd`가 살아있을 때는 기존 IPC push 경로로 즉시 전달을 시도하되, 전달 성공 기준(`delivery_ack`)과 업무 처리 결과(`business_result`)는 분리해 취급한다.
+- `agentd`가 내려가 있거나 worker IPC 연결이 끊긴 상태에서도 worker가 pane_id 기준 queue pull로 이벤트를 가져가 처리할 수 있어야 한다.
+- worker는 agentd 연결 종료 시 자동 재연결(backoff)해야 하며, 재등록 시 backlog replay를 요청/수신할 수 있어야 한다.
+- queue 항목은 `delivery_id` 기반 idempotency를 가져야 하며, 중복 전달 시에도 완료 훅 처리가 안전해야 한다.
+
 ## 5. 비기능 요구사항
 - **경량 인프라** 지향 (최소 비용)
 - 실시간성: 웹뷰에서 상태 변화가 빠르게 반영될 것
