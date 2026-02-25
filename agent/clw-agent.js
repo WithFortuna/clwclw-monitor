@@ -78,7 +78,7 @@ function loadDotEnvIfPresent(filePath) {
 
 /** Per-process deploy mode. Set at startup by login/work command. */
 let _deployMode = null; // 'local' | 'prod' | null
-let _currentAgentId = (process.env.AGENT_ID || '').trim();
+let _currentAgentId = '';
 
 function getDeployMode() {
   if (_deployMode) return _deployMode;
@@ -93,6 +93,84 @@ function setDeployMode(mode) {
     throw new Error(`Invalid deploy mode: ${mode} (must be 'local' or 'prod')`);
   }
   _deployMode = mode;
+}
+
+const LOG_LEVEL_PRIORITY = Object.freeze({
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+});
+
+function normalizeLogLevel(level) {
+  const raw = String(level || '').trim().toLowerCase();
+  if (raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error') {
+    return raw;
+  }
+  return 'info';
+}
+
+function currentLogLevel() {
+  return normalizeLogLevel(process.env.AGENT_LOG_LEVEL || 'info');
+}
+
+function shouldLog(level) {
+  const target = LOG_LEVEL_PRIORITY[normalizeLogLevel(level)];
+  const current = LOG_LEVEL_PRIORITY[currentLogLevel()];
+  return target >= current;
+}
+
+function logAt(level, ...args) {
+  if (!shouldLog(level)) return;
+  const normalized = normalizeLogLevel(level);
+  if (normalized === 'error') {
+    console.error(...args);
+    return;
+  }
+  if (normalized === 'warn') {
+    console.warn(...args);
+    return;
+  }
+  console.log(...args);
+}
+
+function logDebug(...args) {
+  logAt('debug', ...args);
+}
+
+function logInfo(...args) {
+  logAt('info', ...args);
+}
+
+function logWarn(...args) {
+  logAt('warn', ...args);
+}
+
+function logError(...args) {
+  logAt('error', ...args);
+}
+
+function compactLogValue(value) {
+  if (value === undefined || value === null) return '';
+  const s = String(value).replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (s.length <= 120) return s;
+  return s.slice(0, 117) + '...';
+}
+
+function logHookFlow(stage, fields = {}) {
+  const normalizedStage = compactLogValue(stage);
+  const parts = [];
+  if (fields && typeof fields === 'object') {
+    for (const [k, v] of Object.entries(fields)) {
+      const key = compactLogValue(k);
+      const value = compactLogValue(v);
+      if (!key || !value) continue;
+      parts.push(`${key}=${value}`);
+    }
+  }
+  const suffix = parts.length > 0 ? ` ${parts.join(' ')}` : '';
+  logDebug(`[agent][hook-flow] ${normalizedStage}${suffix}`);
 }
 
 function usage() {
@@ -115,11 +193,11 @@ function usage() {
 Env:
   COORDINATOR_URL          default: http://localhost:8080 (also persisted per mode)
   COORDINATOR_AUTH_TOKEN   optional
-  AGENT_ID                 optional process-level override (otherwise issued by heartbeat)
   AGENT_NAME               optional (default: hostname)
   AGENT_MODE               optional: "local" or "prod" (set during login, persisted)
   AGENT_CHANNELS           optional (comma-separated subscriptions; e.g. "backend-domain,notify")
   AGENT_STATE_DIR          optional (state dir override; for multi-agent/multi-session)
+  AGENT_LOG_LEVEL          optional: debug|info|warn|error (default: info)
   AGENT_HEARTBEAT_INTERVAL_SEC  default: 15
   AGENT_WORK_POLL_INTERVAL_SEC  default: 5
 `);
@@ -536,10 +614,29 @@ function ensureHookDeliveryQueued(record) {
   const deliveryId = String(record.delivery_id).trim();
   if (!deliveryId) return null;
 
-  if (isHookDeliveryFinalized(deliveryId) || queueHasPendingDelivery(deliveryId)) {
+  if (isHookDeliveryFinalized(deliveryId)) {
+    logHookFlow('queue.skip_finalized', {
+      delivery_id: deliveryId,
+      pane_id: record.pane_id,
+      hook_type: record.hook_type,
+    });
+    return record;
+  }
+  if (queueHasPendingDelivery(deliveryId)) {
+    logHookFlow('queue.skip_duplicate_pending', {
+      delivery_id: deliveryId,
+      pane_id: record.pane_id,
+      hook_type: record.hook_type,
+    });
     return record;
   }
   appendJsonl(hookQueuePendingPath(), record);
+  logHookFlow('queue.enqueued', {
+    delivery_id: deliveryId,
+    pane_id: record.pane_id,
+    hook_type: record.hook_type,
+    source: record.source,
+  });
   return record;
 }
 
@@ -552,7 +649,14 @@ function enqueueHookDelivery(hookType, paneId, cwd, opts = {}) {
 function appendHookDeliveryAck(deliveryId, paneId, source = 'unknown', extra = {}) {
   const id = String(deliveryId || '').trim();
   if (!id) return false;
-  if (isHookDeliveryFinalized(id)) return false;
+  if (isHookDeliveryFinalized(id)) {
+    logHookFlow('queue.ack_skip_finalized', {
+      delivery_id: id,
+      pane_id: paneId,
+      source,
+    });
+    return false;
+  }
 
   appendJsonl(hookQueueAckPath(), {
     version: HOOK_QUEUE_SCHEMA_VERSION,
@@ -562,13 +666,25 @@ function appendHookDeliveryAck(deliveryId, paneId, source = 'unknown', extra = {
     ts: new Date().toISOString(),
     ...extra,
   });
+  logHookFlow('queue.ack_appended', {
+    delivery_id: id,
+    pane_id: paneId,
+    source,
+  });
   return true;
 }
 
 function appendHookDeliveryDeadletter(deliveryId, paneId, reason, attempts = 0, extra = {}) {
   const id = String(deliveryId || '').trim();
   if (!id) return false;
-  if (isHookDeliveryFinalized(id)) return false;
+  if (isHookDeliveryFinalized(id)) {
+    logHookFlow('queue.deadletter_skip_finalized', {
+      delivery_id: id,
+      pane_id: paneId,
+      reason,
+    });
+    return false;
+  }
 
   appendJsonl(hookQueueDeadletterPath(), {
     version: HOOK_QUEUE_SCHEMA_VERSION,
@@ -578,6 +694,12 @@ function appendHookDeliveryDeadletter(deliveryId, paneId, reason, attempts = 0, 
     reason: String(reason || 'unknown').trim() || 'unknown',
     ts: new Date().toISOString(),
     ...extra,
+  });
+  logHookFlow('queue.deadletter_appended', {
+    delivery_id: id,
+    pane_id: paneId,
+    reason,
+    attempts: Number(attempts || 0),
   });
   return true;
 }
@@ -609,9 +731,17 @@ function listPendingHookDeliveries(opts = {}) {
     });
   }
 
-  return Array.from(dedup.values())
+  const list = Array.from(dedup.values())
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
     .slice(0, limit);
+  if (list.length > 0) {
+    logHookFlow('queue.pending_loaded', {
+      pane_id: paneId || 'all',
+      count: list.length,
+      limit,
+    });
+  }
+  return list;
 }
 
 function configureStateDirForWork(paneIdOrTarget) {
@@ -826,19 +956,49 @@ function runLegacyHook(type) {
   return result.status ?? 1;
 }
 
-async function fetchCurrentTaskFromCoordinator() {
+async function fetchCurrentTaskFromCoordinator(context = '') {
+  const traceContext = String(context || '').trim() || 'unspecified';
   try {
     const agentId = getCurrentAgentId();
-    if (!agentId) return null;
-    const result = await getJson(`/v1/agents/${agentId}/current-task`);
+    if (!agentId) {
+      logDebug(`[agent][current-task] request skipped: ${JSON.stringify({
+        context: traceContext,
+        reason: 'missing_agent_id',
+      })}`);
+      return null;
+    }
+    const path = `/v1/agents/${agentId}/current-task`;
+    logDebug(`[agent][current-task] request: ${JSON.stringify({
+      context: traceContext,
+      method: 'GET',
+      path,
+      body: {},
+    })}`);
+    const result = await getJson(path);
+    logDebug(`[agent][current-task] response: ${JSON.stringify({
+      context: traceContext,
+      status_code: 200,
+      body: result || {},
+    })}`);
     return result?.task || null;
   } catch (err) {
     const errMsg = String(err?.message || err);
 
     // 404 means no current task (expected case)
     if (errMsg.includes('404')) {
+      logDebug(`[agent][current-task] response: ${JSON.stringify({
+        context: traceContext,
+        status_code: 404,
+        body: errMsg,
+      })}`);
       return null;
     }
+
+    logDebug(`[agent][current-task] response: ${JSON.stringify({
+      context: traceContext,
+      status_code: 'error',
+      body: errMsg,
+    })}`);
 
     // ECONNREFUSED = Coordinator not running
     if (errMsg.includes('ECONNREFUSED') || errMsg.includes('connect')) {
@@ -969,7 +1129,14 @@ function startAgentd() {
       const paneId = String(msg?.paneId || msg?.pane_id || '').trim();
       const hookType = sanitizeHookType(msg?.hookType || msg?.hook_type || '');
       const cwd = String(msg?.cwd || '').trim() || process.cwd();
-      if (!paneId || !hookType) return null;
+      if (!paneId || !hookType) {
+        logHookFlow('agentd.parse_invalid', {
+          pane_id: paneId || 'none',
+          hook_type: hookType || 'none',
+          source,
+        });
+        return null;
+      }
 
       return buildHookDeliveryRecord(hookType, paneId, cwd, {
         deliveryId: msg?.deliveryId || msg?.delivery_id,
@@ -986,6 +1153,11 @@ function startAgentd() {
 
       const backlog = listPendingHookDeliveries({ paneId: normalizedPane, limit: HOOK_REPLAY_BATCH });
       if (backlog.length === 0) return;
+      logHookFlow('agentd.replay.begin', {
+        pane_id: normalizedPane,
+        reason: reason || 'unknown',
+        count: backlog.length,
+      });
 
       for (const delivery of backlog) {
         const deliveryId = String(delivery.delivery_id || '').trim();
@@ -1005,6 +1177,12 @@ function startAgentd() {
           createdAt: delivery.created_at,
           replay: true,
           replayReason: reason,
+        });
+        logHookFlow('agentd.replay.enqueue_forward', {
+          request_id: requestId,
+          delivery_id: deliveryId,
+          pane_id: normalizedPane,
+          reason: reason || 'unknown',
         });
         forwardHookToWorker(requestId);
       }
@@ -1044,6 +1222,12 @@ function startAgentd() {
 
     function handleHookRequest(msg, hookSocket) {
       const requestId = msg.id;
+      logHookFlow('agentd.hook_request.received', {
+        request_id: requestId,
+        pane_id: msg?.paneId || msg?.pane_id || '',
+        hook_type: msg?.hookType || msg?.hook_type || '',
+        delivery_id: msg?.deliveryId || msg?.delivery_id || '',
+      });
       const delivery = parseHookDelivery(msg, 'hook');
       if (!delivery) {
         notifyHookSocket(hookSocket, {
@@ -1057,6 +1241,11 @@ function startAgentd() {
 
       ensureHookDeliveryQueued(delivery);
       if (isHookDeliveryFinalized(delivery.delivery_id)) {
+        logHookFlow('agentd.hook_request.deduped_finalized', {
+          request_id: requestId,
+          delivery_id: delivery.delivery_id,
+          pane_id: delivery.pane_id,
+        });
         notifyHookSocket(hookSocket, {
           type: 'hook_result',
           requestId,
@@ -1070,6 +1259,11 @@ function startAgentd() {
       const worker = workers.get(delivery.pane_id);
       if (!worker) {
         console.log(`[agentd] no worker for pane=${delivery.pane_id}, keeping queued delivery=${delivery.delivery_id}`);
+        logHookFlow('agentd.hook_request.queued_no_worker', {
+          request_id: requestId,
+          delivery_id: delivery.delivery_id,
+          pane_id: delivery.pane_id,
+        });
         notifyHookSocket(hookSocket, {
           type: 'hook_result',
           requestId,
@@ -1081,6 +1275,11 @@ function startAgentd() {
       }
 
       if (inFlightDeliveryIDs.has(delivery.delivery_id)) {
+        logHookFlow('agentd.hook_request.in_flight', {
+          request_id: requestId,
+          delivery_id: delivery.delivery_id,
+          pane_id: delivery.pane_id,
+        });
         notifyHookSocket(hookSocket, {
           type: 'hook_result',
           requestId,
@@ -1102,6 +1301,11 @@ function startAgentd() {
         deliveryId: delivery.delivery_id,
         createdAt: delivery.created_at,
       });
+      logHookFlow('agentd.hook_request.forward_ready', {
+        request_id: requestId,
+        delivery_id: delivery.delivery_id,
+        pane_id: delivery.pane_id,
+      });
 
       forwardHookToWorker(requestId);
     }
@@ -1109,6 +1313,9 @@ function startAgentd() {
     function handleReplayRequest(msg, socket) {
       const paneId = String(msg?.paneId || msg?.pane_id || socketToPaneId.get(socket) || '').trim();
       if (!paneId) return;
+      logHookFlow('agentd.replay.requested', {
+        pane_id: paneId,
+      });
       flushPendingQueueForPane(paneId, 'replay_request');
     }
 
@@ -1141,6 +1348,13 @@ function startAgentd() {
         deliveryId: pending.deliveryId,
         createdAt: pending.createdAt,
       });
+      logHookFlow('agentd.forward.sent', {
+        request_id: requestId,
+        delivery_id: pending.deliveryId,
+        pane_id: pending.paneId,
+        hook_type: pending.hookType,
+        attempt: pending.attempts,
+      });
 
       // Set ack timeout
       pending.timer = setTimeout(() => {
@@ -1149,6 +1363,12 @@ function startAgentd() {
 
         if (p.attempts < HOOK_MAX_RETRIES) {
           console.log(`[agentd] hook_ack timeout, retrying (attempt ${p.attempts + 1}/${HOOK_MAX_RETRIES})`);
+          logHookFlow('agentd.forward.timeout_retry', {
+            request_id: requestId,
+            delivery_id: p.deliveryId,
+            pane_id: p.paneId,
+            attempt: p.attempts,
+          });
           forwardHookToWorker(requestId);
         } else {
           const dead = appendHookDeliveryDeadletter(
@@ -1166,6 +1386,12 @@ function startAgentd() {
             error: 'ack timeout',
             deliveryId: p.deliveryId,
           });
+          logHookFlow('agentd.forward.timeout_deadletter', {
+            request_id: requestId,
+            delivery_id: p.deliveryId,
+            pane_id: p.paneId,
+            attempts: p.attempts,
+          });
           releasePendingHook(requestId);
         }
       }, HOOK_ACK_TIMEOUT);
@@ -1174,6 +1400,13 @@ function startAgentd() {
     function handleHookAck(msg) {
       const { requestId, success, taskId, error } = msg;
       const phase = String(msg?.phase || '').trim() || 'delivery';
+      logHookFlow('agentd.hook_ack.received', {
+        request_id: requestId,
+        phase,
+        success: success === true ? 'true' : 'false',
+        delivery_id: msg?.deliveryId || msg?.delivery_id || '',
+        task_id: taskId || '',
+      });
       const pending = pendingHooks.get(requestId);
       if (!pending) {
         if (phase === 'business') {
@@ -1187,6 +1420,12 @@ function startAgentd() {
 
       if (phase === 'business') {
         console.log(`[agentd] hook business_result: delivery=${pending.deliveryId} success=${success === true} task=${taskId || ''}`);
+        logHookFlow('agentd.hook_ack.business', {
+          request_id: requestId,
+          delivery_id: pending.deliveryId,
+          success: success === true ? 'true' : 'false',
+          task_id: taskId || '',
+        });
         return;
       }
 
@@ -1202,6 +1441,11 @@ function startAgentd() {
           success: true,
           taskId,
           deliveryId: pending.deliveryId,
+        });
+        logHookFlow('agentd.hook_ack.delivery_ok', {
+          request_id: requestId,
+          delivery_id: pending.deliveryId,
+          pane_id: pending.paneId,
         });
         releasePendingHook(requestId);
         console.log(`[agentd] hook_ack delivery: request=${requestId} delivery=${pending.deliveryId}`);
@@ -1227,6 +1471,13 @@ function startAgentd() {
         success: false,
         error: error || 'delivery ack failed',
         deliveryId: pending.deliveryId,
+      });
+      logHookFlow('agentd.hook_ack.delivery_failed', {
+        request_id: requestId,
+        delivery_id: pending.deliveryId,
+        pane_id: pending.paneId,
+        attempts: pending.attempts,
+        error: error || 'delivery ack failed',
       });
       releasePendingHook(requestId);
       console.log(`[agentd] hook_ack delivery failed: request=${requestId} delivery=${pending.deliveryId}`);
@@ -1322,10 +1573,23 @@ function tryHookViaAgentd(input, hookTypeFallback = '') {
     ? String(input?.cwd || '').trim() || process.cwd()
     : process.cwd();
 
-  if (!paneId || !hookType) return Promise.resolve(false);
+  if (!paneId || !hookType) {
+    logHookFlow('hook.ipc.skip_invalid', {
+      pane_id: paneId || 'none',
+      hook_type: hookType || 'none',
+    });
+    return Promise.resolve(false);
+  }
 
   const sockPath = resolveSocketPath();
-  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
+  if (!fs.existsSync(sockPath)) {
+    logHookFlow('hook.ipc.socket_missing', {
+      pane_id: paneId,
+      hook_type: hookType,
+      socket: sockPath,
+    });
+    return Promise.resolve(false);
+  }
 
   return new Promise((resolve) => {
     const TOTAL_TIMEOUT = 90000;
@@ -1336,21 +1600,63 @@ function tryHookViaAgentd(input, hookTypeFallback = '') {
       settled = true;
       clearTimeout(timer);
       try { socket.end(); } catch {}
+      logHookFlow('hook.ipc.finish', {
+        pane_id: paneId,
+        hook_type: hookType,
+        delivery_id: deliveryId || 'none',
+        success: result ? 'true' : 'false',
+      });
       resolve(result);
     };
 
-    const timer = setTimeout(() => finish(false), TOTAL_TIMEOUT);
+    const timer = setTimeout(() => {
+      logHookFlow('hook.ipc.timeout', {
+        pane_id: paneId,
+        hook_type: hookType,
+        delivery_id: deliveryId || 'none',
+        timeout_ms: TOTAL_TIMEOUT,
+      });
+      finish(false);
+    }, TOTAL_TIMEOUT);
 
     const socket = net.createConnection(sockPath);
 
     socket.setEncoding('utf8');
-    socket.on('error', () => finish(false));
-    socket.on('close', () => finish(false));
+    socket.on('error', (err) => {
+      logHookFlow('hook.ipc.error', {
+        pane_id: paneId,
+        hook_type: hookType,
+        delivery_id: deliveryId || 'none',
+        error: String(err?.message || err),
+      });
+      finish(false);
+    });
+    socket.on('close', () => {
+      logHookFlow('hook.ipc.closed', {
+        pane_id: paneId,
+        hook_type: hookType,
+        delivery_id: deliveryId || 'none',
+      });
+      finish(false);
+    });
 
     const parser = createNdjsonParser((msg) => {
       if (msg.type === 'hook_result') {
+        logHookFlow('hook.ipc.hook_result', {
+          pane_id: paneId,
+          hook_type: hookType,
+          delivery_id: msg?.deliveryId || deliveryId || 'none',
+          request_id: msg?.requestId || 'none',
+          success: msg?.success === true ? 'true' : 'false',
+          queued: msg?.queued === true ? 'true' : 'false',
+        });
         finish(msg.success === true);
       } else if (msg.type === 'hook_no_match') {
+        logHookFlow('hook.ipc.no_match', {
+          pane_id: paneId,
+          hook_type: hookType,
+          request_id: msg?.requestId || 'none',
+        });
         finish(false);
       }
     });
@@ -1366,6 +1672,11 @@ function tryHookViaAgentd(input, hookTypeFallback = '') {
       };
       if (deliveryId) payload.deliveryId = deliveryId;
       if (createdAt) payload.createdAt = createdAt;
+      logHookFlow('hook.ipc.send_request', {
+        pane_id: paneId,
+        hook_type: hookType,
+        delivery_id: deliveryId || 'none',
+      });
       sendMsg(socket, payload);
     });
   });
@@ -1376,10 +1687,10 @@ function tryHookViaAgentd(input, hookTypeFallback = '') {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function hookDirectCoordinator(type, detectedPaneId, detectedTarget) {
-  process.stderr.write(`[agent] ═══ Coordinator Upload Starting ═══\n`);
-  process.stderr.write(`[agent] Hook type: ${type}\n`);
-  process.stderr.write(`[agent] Pane ID: ${detectedPaneId || 'N/A'}\n`);
-  process.stderr.write(`[agent] Coordinator URL: ${coordinatorBaseUrl()}\n`);
+  logDebug('[agent] ═══ Coordinator Upload Starting ═══');
+  logDebug(`[agent] Hook type: ${type}`);
+  logDebug(`[agent] Pane ID: ${detectedPaneId || 'N/A'}`);
+  logDebug(`[agent] Coordinator URL: ${coordinatorBaseUrl()}`);
 
   // Detect Claude Code running status
   let claudeRunning = false;
@@ -1414,7 +1725,7 @@ async function hookDirectCoordinator(type, detectedPaneId, detectedTarget) {
     console.log(`[agent] hook completed: agent_id=${agentId}, coordinator=${coordinatorBaseUrl()}`);
 
     console.log(`[agent] Fetching current task from coordinator...`);
-    const current = await fetchCurrentTaskFromCoordinator();
+    const current = await fetchCurrentTaskFromCoordinator('hook_direct.completed');
     console.log(`[agent] current task from coordinator: ${current ? JSON.stringify({ id: current.id, title: current.title, assigned_agent_id: current.assigned_agent_id }) : 'null'}`);
 
     if (current && current.id) {
@@ -1527,7 +1838,7 @@ function connectToAgentd(paneId, agentId, mode, coordinatorUrl, channels) {
         if (!resolved) {
           resolved = true;
           clearTimeout(timeout);
-          console.log(`[agent] registered with agentd: pane=${paneId}`);
+          logDebug(`[agent] registered with agentd: pane=${paneId}`);
           resolve(socket);
         }
       }
@@ -1541,6 +1852,7 @@ function requestHookReplayFromAgentd(agentdSocket, paneId) {
   if (!agentdSocket || agentdSocket.destroyed) return;
   const normalizedPane = String(paneId || '').trim();
   if (!normalizedPane) return;
+  logHookFlow('worker.replay_request.send', { pane_id: normalizedPane });
   sendMsg(agentdSocket, { type: 'replay_request', paneId: normalizedPane });
 }
 
@@ -1557,8 +1869,19 @@ function setupAgentdListener(agentdSocket, tmuxTarget, tmuxPaneId, channels) {
 async function handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId) {
   const { requestId, hookType, paneId, cwd } = msg;
   const deliveryId = String(msg?.deliveryId || msg?.delivery_id || '').trim();
+  logHookFlow('worker.hook_forward.received', {
+    request_id: requestId || 'none',
+    delivery_id: deliveryId || 'none',
+    pane_id: paneId || tmuxPaneId || 'none',
+    hook_type: hookType || 'none',
+  });
   if (agentdSocket && requestId) {
     // Delivery ACK: receiving worker accepted this message.
+    logHookFlow('worker.hook_forward.delivery_ack.send', {
+      request_id: requestId,
+      delivery_id: deliveryId || 'none',
+      pane_id: tmuxPaneId || paneId || 'none',
+    });
     sendMsg(agentdSocket, {
       type: 'hook_ack',
       requestId,
@@ -1595,10 +1918,21 @@ async function handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId) {
 
     let taskId = '';
     if (hookType === 'completed') {
-      const current = await fetchCurrentTaskFromCoordinator();
+      const current = await fetchCurrentTaskFromCoordinator('hook_forward.completed');
+      logHookFlow('worker.hook_forward.current_task', {
+        request_id: requestId || 'none',
+        delivery_id: deliveryId || 'none',
+        task_id: current?.id || 'none',
+      });
       if (current && current.id) {
         const result = await completeTask(current.id);
         taskId = current.id;
+        logHookFlow('worker.hook_forward.complete_attempt', {
+          request_id: requestId || 'none',
+          delivery_id: deliveryId || 'none',
+          task_id: current.id,
+          result: result ? 'ok' : 'null',
+        });
 
         await emitEvent('task.completed', {
           task_id: current.id,
@@ -1623,6 +1957,12 @@ async function handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId) {
     }
 
     if (agentdSocket && requestId) {
+      logHookFlow('worker.hook_forward.business_ack.send', {
+        request_id: requestId,
+        delivery_id: deliveryId || 'none',
+        task_id: taskId || 'none',
+        success: 'true',
+      });
       sendMsg(agentdSocket, {
         type: 'hook_ack',
         requestId,
@@ -1634,7 +1974,18 @@ async function handleHookForward(agentdSocket, msg, tmuxTarget, tmuxPaneId) {
     }
   } catch (err) {
     console.error(`[agent] hook_forward handling failed: ${err.message}`);
+    logHookFlow('worker.hook_forward.error', {
+      request_id: requestId || 'none',
+      delivery_id: deliveryId || 'none',
+      error: String(err?.message || err),
+    });
     if (agentdSocket && requestId) {
+      logHookFlow('worker.hook_forward.business_ack.send', {
+        request_id: requestId,
+        delivery_id: deliveryId || 'none',
+        task_id: 'none',
+        success: 'false',
+      });
       sendMsg(agentdSocket, {
         type: 'hook_ack',
         requestId,
@@ -1677,6 +2028,11 @@ async function pullHookQueueForPane(tmuxTarget, tmuxPaneId, maxItems = HOOK_QUEU
   if (!paneId) return 0;
 
   const pending = listPendingHookDeliveries({ paneId, limit: maxItems });
+  logHookFlow('worker.pull.scan', {
+    pane_id: paneId,
+    pending_count: pending.length,
+    max_items: maxItems,
+  });
   if (pending.length === 0) return 0;
 
   let processed = 0;
@@ -1687,6 +2043,12 @@ async function pullHookQueueForPane(tmuxTarget, tmuxPaneId, maxItems = HOOK_QUEU
     if (isHookDeliveryFinalized(deliveryId)) continue;
 
     rememberPulledDelivery(deliveryId);
+    logHookFlow('worker.pull.process', {
+      pane_id: paneId,
+      delivery_id: deliveryId,
+      hook_type: delivery.hook_type,
+      source: delivery.source || 'unknown',
+    });
     appendHookDeliveryAck(deliveryId, paneId, 'worker_pull_delivery', {
       source: delivery.source || 'hook',
     });
@@ -1701,9 +2063,18 @@ async function pullHookQueueForPane(tmuxTarget, tmuxPaneId, maxItems = HOOK_QUEU
       }, tmuxTarget, tmuxPaneId);
     } catch (err) {
       console.error(`[agent] queue pull delivery failed: id=${deliveryId} err=${String(err?.message || err)}`);
+      logHookFlow('worker.pull.error', {
+        pane_id: paneId,
+        delivery_id: deliveryId,
+        error: String(err?.message || err),
+      });
     }
     processed++;
   }
+  logHookFlow('worker.pull.done', {
+    pane_id: paneId,
+    processed,
+  });
   return processed;
 }
 
@@ -2233,6 +2604,8 @@ function tmuxInject(target, text, paneId = '') {
     throw new Error('tmux send-keys failed');
   }
   // Use C-Enter for Claude Code submission (Enter alone = newline)
+  // Send twice to ensure submission goes through
+  spawnSync('tmux', ['send-keys', '-t', resolved, 'C-Enter'], { stdio: 'ignore' });
   spawnSync('tmux', ['send-keys', '-t', resolved, 'C-Enter'], { stdio: 'ignore' });
 }
 
@@ -2263,6 +2636,8 @@ function tmuxSend(target, text, opts = {}) {
     }
   }
   if (enter) {
+    // Send twice to ensure submission goes through
+    spawnSync('tmux', ['send-keys', '-t', resolved, 'Enter'], { stdio: 'ignore' });
     spawnSync('tmux', ['send-keys', '-t', resolved, 'Enter'], { stdio: 'ignore' });
   }
 }
@@ -2708,6 +3083,7 @@ async function startWorkLoop(channels, initialTarget) {
 
     if (!socket) {
       nextAgentdConnectAt = Date.now() + agentdReconnectBackoffMs;
+      logDebug(`[agent] agentd connect failed, retry in ${agentdReconnectBackoffMs}ms`);
       agentdReconnectBackoffMs = Math.min(agentdReconnectBackoffMs * 2, 30000);
       return false;
     }
@@ -2716,9 +3092,9 @@ async function startWorkLoop(channels, initialTarget) {
     nextAgentdConnectAt = 0;
     agentdReconnectBackoffMs = 1000;
     if (reason) {
-      console.log(`[agent] agentd connected (${reason})`);
+      logDebug(`[agent] agentd connected (${reason})`);
     } else {
-      console.log('[agent] agentd connected');
+      logDebug('[agent] agentd connected');
     }
     return true;
   };
@@ -2786,7 +3162,7 @@ async function startWorkLoop(channels, initialTarget) {
         if (now - lastQueuePullAt >= pollSec * 1000) {
           const pulled = await pullHookQueueForPane(tmuxTarget, tmuxPaneId).catch(() => 0);
           if (pulled > 0) {
-            console.log(`[agent] pulled ${pulled} queued hook delivery event(s) for pane=${tmuxPaneId}`);
+            logDebug(`[agent] pulled ${pulled} queued hook delivery event(s) for pane=${tmuxPaneId}`);
           }
           lastQueuePullAt = now;
         }
@@ -2922,7 +3298,7 @@ async function startWorkLoop(channels, initialTarget) {
 
     // STATE 2: MAIN WORKER MODE (tmuxTarget is set)
     // ============================================
-    let inFlight = await fetchCurrentTaskFromCoordinator().catch(() => null);
+    let inFlight = await fetchCurrentTaskFromCoordinator('work_loop.inflight_check').catch(() => null);
 
     if (inFlight && inFlight.id) {
       const taskId = inFlight.id;
@@ -3048,12 +3424,12 @@ async function main() {
     const detectedTarget = detectTmuxTarget(); // Deprecated: only for state dir fallback
 
     // DEBUG: Log pane ID detection for hook
-    process.stderr.write(`[agent] ═══ Hook Pane ID Detection ═══\n`);
-    process.stderr.write(`[agent] Hook type: ${type}\n`);
-    process.stderr.write(`[agent] $TMUX_PANE env: ${process.env.TMUX_PANE || 'NOT SET'}\n`);
-    process.stderr.write(`[agent] detectTmuxPaneId(): ${detectedPaneId || 'NULL'}\n`);
-    process.stderr.write(`[agent] detectTmuxTarget(): ${detectedTarget || 'NULL'}\n`);
-    process.stderr.write(`[agent] Will use pane_id: ${detectedPaneId || 'FALLBACK TO TARGET'}\n`);
+    logDebug('[agent] ═══ Hook Pane ID Detection ═══');
+    logDebug(`[agent] Hook type: ${type}`);
+    logDebug(`[agent] $TMUX_PANE env: ${process.env.TMUX_PANE || 'NOT SET'}`);
+    logDebug(`[agent] detectTmuxPaneId(): ${detectedPaneId || 'NULL'}`);
+    logDebug(`[agent] detectTmuxTarget(): ${detectedTarget || 'NULL'}`);
+    logDebug(`[agent] Will use pane_id: ${detectedPaneId || 'FALLBACK TO TARGET'}`);
 
     const state = configureStateDirForHook(detectedPaneId || detectedTarget);
     if (!(process.env.AGENT_NAME || '').trim() && state.label) {
@@ -3073,9 +3449,9 @@ async function main() {
       : null;
 
     if (queuedDelivery) {
-      process.stderr.write(`[agent] queued durable hook delivery: id=${queuedDelivery.delivery_id} pane=${queuedDelivery.pane_id}\n`);
+      logDebug(`[agent] queued durable hook delivery: id=${queuedDelivery.delivery_id} pane=${queuedDelivery.pane_id}`);
     } else {
-      process.stderr.write('[agent] durable queue skipped: pane_id unavailable\n');
+      logWarn('[agent] durable queue skipped: pane_id unavailable');
     }
 
     // 1) Preserve legacy behavior first (CWD/env needed by legacy hook).
@@ -3085,7 +3461,7 @@ async function main() {
     try {
       let ipcHandled = false;
       if (detectedPaneId && queuedDelivery) {
-        process.stderr.write(`[agent] Attempting agentd IPC for pane=${detectedPaneId}...\n`);
+        logDebug(`[agent] Attempting agentd IPC for pane=${detectedPaneId}...`);
         ipcHandled = await tryHookViaAgentd({
           paneId: detectedPaneId,
           hookType: type,
@@ -3094,9 +3470,9 @@ async function main() {
           createdAt: queuedDelivery.created_at,
         });
         if (ipcHandled) {
-          process.stderr.write(`[agent] Hook handled via agentd IPC\n`);
+          logDebug('[agent] Hook handled via agentd IPC');
         } else {
-          process.stderr.write(`[agent] agentd IPC unavailable, keeping queued delivery and trying direct coordinator fallback\n`);
+          logDebug('[agent] agentd IPC unavailable, keeping queued delivery and trying direct coordinator fallback');
         }
       }
 
@@ -3107,11 +3483,11 @@ async function main() {
         }
       }
     } catch (err) {
-      process.stderr.write(`[agent] Coordinator upload failed (ignored)\n`);
-      process.stderr.write(`[agent] Error type: ${err?.constructor?.name || 'Unknown'}\n`);
-      process.stderr.write(`[agent] Error message: ${String(err?.message || err)}\n`);
+      logWarn('[agent] Coordinator upload failed (ignored)');
+      logError(`[agent] Error type: ${err?.constructor?.name || 'Unknown'}`);
+      logError(`[agent] Error message: ${String(err?.message || err)}`);
       if (err?.stack) {
-        process.stderr.write(`[agent] Stack trace:\n${err.stack}\n`);
+        logDebug(`[agent] Stack trace:\n${err.stack}`);
       }
     }
 

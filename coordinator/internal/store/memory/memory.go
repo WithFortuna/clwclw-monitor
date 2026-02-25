@@ -71,9 +71,6 @@ func (s *Store) UpsertAgent(_ context.Context, a model.Agent) (model.Agent, erro
 		if a.ClaudeStatus != "" {
 			existing.ClaudeStatus = a.ClaudeStatus
 		}
-		if a.CurrentTaskID != "" {
-			existing.CurrentTaskID = a.CurrentTaskID
-		}
 		if a.Meta != nil {
 			existing.Meta = a.Meta
 		}
@@ -89,6 +86,8 @@ func (s *Store) UpsertAgent(_ context.Context, a model.Agent) (model.Agent, erro
 	if a.ClaudeStatus == "" {
 		a.ClaudeStatus = model.ClaudeStatusIdle
 	}
+	// current_task_id is task-lifecycle-owned; do not set it from heartbeat/upsert payload.
+	a.CurrentTaskID = ""
 	a.LastSeen = now
 	a.CreatedAt = now
 	a.UpdatedAt = now
@@ -325,11 +324,8 @@ func (s *Store) DetachAgentFromChain(_ context.Context, req store.DetachAgentFro
 	s.chains[chainID] = chain
 	s.reevaluateChainStatus(chainID, now)
 
-	// Clear agent's current_task_id
-	if agent, ok := s.agents[agentID]; ok {
-		agent.CurrentTaskID = ""
-		agent.UpdatedAt = now
-		s.agents[agentID] = agent
+	if err := s.syncAgentCurrentTaskLocked(agentID, now); err != nil {
+		return err
 	}
 
 	return nil
@@ -360,6 +356,7 @@ func (s *Store) UpdateTaskStatus(_ context.Context, taskID string, newStatus mod
 	}
 
 	now := time.Now().UTC()
+	affectedAgentID := strings.TrimSpace(t.AssignedAgentID)
 
 	if newStatus == model.TaskStatusQueued {
 		t.Status = model.TaskStatusQueued
@@ -372,6 +369,9 @@ func (s *Store) UpdateTaskStatus(_ context.Context, taskID string, newStatus mod
 		t.UpdatedAt = now
 	}
 	s.tasks[taskID] = t
+	if err := s.syncAgentCurrentTaskLocked(affectedAgentID, now); err != nil {
+		return nil, err
+	}
 
 	// Re-evaluate chain status
 	if t.ChainID != "" {
@@ -501,6 +501,58 @@ func (s *Store) ListTasks(_ context.Context, f store.TaskFilter) ([]model.Task, 
 	return out, nil
 }
 
+// hasAnotherInProgressTaskForAgentLocked returns true when the agent already owns
+// another in-progress task (excluding exceptTaskID).
+// Must be called with s.mu held.
+func (s *Store) hasAnotherInProgressTaskForAgentLocked(agentID, exceptTaskID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	exceptTaskID = strings.TrimSpace(exceptTaskID)
+	if agentID == "" {
+		return false
+	}
+
+	for _, t := range s.tasks {
+		if t.AssignedAgentID != agentID || t.Status != model.TaskStatusInProgress {
+			continue
+		}
+		if exceptTaskID != "" && t.ID == exceptTaskID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// syncAgentCurrentTaskLocked derives agent.current_task_id from the task table.
+// Must be called with s.mu held.
+func (s *Store) syncAgentCurrentTaskLocked(agentID string, now time.Time) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+
+	agent, ok := s.agents[agentID]
+	if !ok {
+		return nil
+	}
+
+	var inProgressTaskID string
+	for _, t := range s.tasks {
+		if t.AssignedAgentID != agentID || t.Status != model.TaskStatusInProgress {
+			continue
+		}
+		if inProgressTaskID != "" && inProgressTaskID != t.ID {
+			return store.ErrConflict
+		}
+		inProgressTaskID = t.ID
+	}
+
+	agent.CurrentTaskID = inProgressTaskID
+	agent.UpdatedAt = now
+	s.agents[agentID] = agent
+	return nil
+}
+
 func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -532,6 +584,9 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 	}
 	if channelID == "" {
 		return nil, errWithCode("channel_id_or_channel_required")
+	}
+	if s.hasAnotherInProgressTaskForAgentLocked(req.AgentID, "") {
+		return nil, store.ErrConflict
 	}
 
 	// Check if agent already owns a chain
@@ -646,12 +701,8 @@ func (s *Store) ClaimTask(_ context.Context, req store.ClaimTaskRequest) (*model
 		s.claimIdem[key] = taskToClaim.ID
 	}
 
-	// Update agent's current_task_id (task claimed)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
-	if agent, ok := s.agents[req.AgentID]; ok {
-		agent.CurrentTaskID = taskToClaim.ID
-		agent.UpdatedAt = now
-		s.agents[req.AgentID] = agent
+	if err := s.syncAgentCurrentTaskLocked(req.AgentID, now); err != nil {
+		return nil, err
 	}
 
 	return taskToClaim, nil
@@ -684,6 +735,9 @@ func (s *Store) AssignTask(_ context.Context, req store.AssignTaskRequest) (*mod
 	default:
 		return nil, store.ErrConflict
 	}
+	if s.hasAnotherInProgressTaskForAgentLocked(req.AgentID, t.ID) {
+		return nil, store.ErrConflict
+	}
 
 	now := time.Now().UTC()
 	t.Status = model.TaskStatusInProgress
@@ -694,12 +748,8 @@ func (s *Store) AssignTask(_ context.Context, req store.AssignTaskRequest) (*mod
 	t.UpdatedAt = now
 	s.tasks[t.ID] = t
 
-	// Update agent's current_task_id (task assigned)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
-	if agent, ok := s.agents[req.AgentID]; ok {
-		agent.CurrentTaskID = t.ID
-		agent.UpdatedAt = now
-		s.agents[req.AgentID] = agent
+	if err := s.syncAgentCurrentTaskLocked(req.AgentID, now); err != nil {
+		return nil, err
 	}
 
 	return &t, nil
@@ -750,18 +800,12 @@ func (s *Store) CompleteTask(_ context.Context, req store.CompleteTaskRequest) (
 		return nil, store.ErrConflict
 	}
 
-	// Clear agent's current_task_id (task is complete)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
-	if agentID != "" {
-		if agent, ok := s.agents[agentID]; ok {
-			agent.CurrentTaskID = ""
-			agent.UpdatedAt = now
-			s.agents[agentID] = agent
-		}
+	if err := s.syncAgentCurrentTaskLocked(agentID, now); err != nil {
+		return nil, err
 	}
 
 	// Update chain status (but NOT ownership - ownership persists until explicit detach)
@@ -841,18 +885,12 @@ func (s *Store) FailTask(_ context.Context, req store.FailTaskRequest) (*model.T
 		return nil, store.ErrConflict
 	}
 
-	// Clear agent's current_task_id (task failed)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
-	if agentID != "" {
-		if agent, ok := s.agents[agentID]; ok {
-			agent.CurrentTaskID = ""
-			agent.UpdatedAt = now
-			s.agents[agentID] = agent
-		}
+	if err := s.syncAgentCurrentTaskLocked(agentID, now); err != nil {
+		return nil, err
 	}
 
 	// Update chain status (but NOT ownership - ownership persists until explicit detach)

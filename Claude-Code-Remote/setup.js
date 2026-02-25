@@ -10,20 +10,47 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const { execSync } = require('child_process');
 const dotenv = require('dotenv');
 
 const projectRoot = __dirname;
 const envPath = path.join(projectRoot, '.env');
 const legacyHookScriptPath = path.join(projectRoot, 'claude-hook-notify.js');
-const agentHookScriptPath = path.resolve(projectRoot, '..', 'agent', 'clw-agent.js');
+function resolveAgentScriptPath() {
+    const scriptName = 'clw-agent.js';
+    const pkgName = '@clwclw-monitor/agent';
+
+    // 1. 로컬 node_modules에서 찾기 (npm install로 로컬 설치한 경우)
+    try {
+        const pkgJson = require.resolve(pkgName + '/package.json');
+        const candidate = path.join(path.dirname(pkgJson), scriptName);
+        if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+
+    // 2. 글로벌 node_modules에서 찾기 (npm install -g 한 경우)
+    //    npm root -g: homebrew, nvm, volta, fnm 등 어떤 방식이든 올바른 경로 반환
+    try {
+        const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+        const candidate = path.join(globalRoot, pkgName, scriptName);
+        if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+
+    // 3. 모노레포: 상대경로
+    const monorepo = path.resolve(projectRoot, '..', 'agent', scriptName);
+    if (fs.existsSync(monorepo)) return monorepo;
+
+    // 4. 못 찾음 → null (legacy fallback)
+    return null;
+}
+const agentHookScriptPath = resolveAgentScriptPath();
 const defaultSessionMap = path.join(projectRoot, 'src', 'data', 'session-map.json');
 const i18nPath = path.join(projectRoot, 'setup-i18n.json');
 
 function resolveHookMode() {
     const raw = (process.env.CLAUDE_REMOTE_HOOK_TARGET || '').trim().toLowerCase();
     if (raw === 'legacy') return 'legacy';
-    if (raw === 'agent') return fs.existsSync(agentHookScriptPath) ? 'agent' : 'legacy';
-    return fs.existsSync(agentHookScriptPath) ? 'agent' : 'legacy';
+    if (raw === 'agent') return agentHookScriptPath ? 'agent' : 'legacy';
+    return agentHookScriptPath ? 'agent' : 'legacy';
 }
 
 const hookMode = resolveHookMode(); // 'agent' | 'legacy'
