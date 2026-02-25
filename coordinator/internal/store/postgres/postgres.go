@@ -62,14 +62,20 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 		}
 	}
 
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return model.Agent{}, mapPgErr(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var out model.Agent
 	if strings.TrimSpace(a.ID) == "" {
-		// Let DB generate UUID.
-		var out model.Agent
-		err := s.pool.QueryRow(ctx, `
+		// current_task_id is task-lifecycle-owned; do not set it from heartbeat/upsert payload.
+		err = tx.QueryRow(ctx, `
 			insert into public.agents (name, status, claude_status, current_task_id, last_seen, meta, user_id)
-			values ($1, $2, $3, nullif($4, '')::uuid, $5, $6::jsonb, nullif($7, '')::uuid)
+			values ($1, $2, $3, null, $4, $5::jsonb, nullif($6, '')::uuid)
 			returning id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-		`, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON), a.UserID).Scan(
+		`, a.Name, string(a.Status), string(a.ClaudeStatus), now, string(metaJSON), a.UserID).Scan(
 			&out.ID,
 			&out.UserID,
 			&out.Name,
@@ -81,44 +87,68 @@ func (s *Store) UpsertAgent(ctx context.Context, a model.Agent) (model.Agent, er
 			&out.CreatedAt,
 			&out.UpdatedAt,
 		)
-		if err != nil {
-			return model.Agent{}, mapPgErr(err)
-		}
-		_ = json.Unmarshal(metaJSON, &out.Meta)
-		return out, nil
+	} else {
+		// Keep existing current_task_id; it is synchronized by task lifecycle transitions.
+		err = tx.QueryRow(ctx, `
+			insert into public.agents (id, name, status, claude_status, current_task_id, last_seen, meta, user_id)
+			values ($1::uuid, $2, $3, $4, null, $5, $6::jsonb, nullif($7, '')::uuid)
+			on conflict (id) do update
+			set name = excluded.name,
+			    status = excluded.status,
+			    claude_status = excluded.claude_status,
+			    last_seen = excluded.last_seen,
+			    meta = excluded.meta,
+			    user_id = coalesce(excluded.user_id, public.agents.user_id),
+			    updated_at = now()
+			returning id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		`, a.ID, a.Name, string(a.Status), string(a.ClaudeStatus), now, string(metaJSON), a.UserID).Scan(
+			&out.ID,
+			&out.UserID,
+			&out.Name,
+			&out.Status,
+			&out.ClaudeStatus,
+			&out.CurrentTaskID,
+			&out.LastSeen,
+			&metaJSON,
+			&out.CreatedAt,
+			&out.UpdatedAt,
+		)
 	}
-
-	var out model.Agent
-	err := s.pool.QueryRow(ctx, `
-		insert into public.agents (id, name, status, claude_status, current_task_id, last_seen, meta, user_id)
-		values ($1::uuid, $2, $3, $4, nullif($5, '')::uuid, $6, $7::jsonb, nullif($8, '')::uuid)
-		on conflict (id) do update
-		set name = excluded.name,
-		    status = excluded.status,
-		    claude_status = excluded.claude_status,
-		    current_task_id = excluded.current_task_id,
-		    last_seen = excluded.last_seen,
-		    meta = excluded.meta,
-		    user_id = coalesce(excluded.user_id, public.agents.user_id),
-		    updated_at = now()
-		returning id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
-	`, a.ID, a.Name, string(a.Status), string(a.ClaudeStatus), a.CurrentTaskID, now, string(metaJSON), a.UserID).Scan(
-		&out.ID,
-		&out.UserID,
-		&out.Name,
-		&out.Status,
-		&out.ClaudeStatus,
-		&out.CurrentTaskID,
-		&out.LastSeen,
-		&metaJSON,
-		&out.CreatedAt,
-		&out.UpdatedAt,
-	)
 	if err != nil {
 		return model.Agent{}, mapPgErr(err)
 	}
-	_ = json.Unmarshal(metaJSON, &out.Meta)
-	return out, nil
+
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, out.ID); err != nil {
+		return model.Agent{}, err
+	}
+
+	var final model.Agent
+	var finalMetaJSON []byte
+	if err := tx.QueryRow(ctx, `
+		select id::text, coalesce(user_id::text, ''), name, status, claude_status, coalesce(current_task_id::text, ''), last_seen, meta, created_at, updated_at
+		from public.agents
+		where id = $1::uuid
+	`, out.ID).Scan(
+		&final.ID,
+		&final.UserID,
+		&final.Name,
+		&final.Status,
+		&final.ClaudeStatus,
+		&final.CurrentTaskID,
+		&final.LastSeen,
+		&finalMetaJSON,
+		&final.CreatedAt,
+		&final.UpdatedAt,
+	); err != nil {
+		return model.Agent{}, mapPgErr(err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return model.Agent{}, mapPgErr(err)
+	}
+
+	_ = json.Unmarshal(finalMetaJSON, &final.Meta)
+	return final, nil
 }
 
 func (s *Store) ListAgents(ctx context.Context, userID string) ([]model.Agent, error) {
@@ -444,14 +474,8 @@ func (s *Store) DetachAgentFromChain(ctx context.Context, req store.DetachAgentF
 		return err
 	}
 
-	// Clear agent's current_task_id
-	_, err = tx.Exec(ctx, `
-		update public.agents
-		set current_task_id = null, updated_at = now()
-		where id = $1::uuid
-	`, req.AgentID)
-	if err != nil {
-		return mapPgErr(err)
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, req.AgentID); err != nil {
+		return err
 	}
 
 	return tx.Commit(ctx)
@@ -735,6 +759,59 @@ func (s *Store) ListTasks(ctx context.Context, f store.TaskFilter) ([]model.Task
 	return out, nil
 }
 
+// syncAgentCurrentTaskTx derives agents.current_task_id from tasks assigned to the agent.
+// Must be called within the same transaction as task lifecycle mutations.
+func (s *Store) syncAgentCurrentTaskTx(ctx context.Context, tx pgx.Tx, agentID string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		select id::text
+		from public.tasks
+		where assigned_agent_id = $1::uuid
+		  and status = 'in_progress'
+		order by claimed_at asc nulls last, created_at asc, id asc
+		limit 2
+	`, agentID)
+	if err != nil {
+		return mapPgErr(err)
+	}
+	defer rows.Close()
+
+	taskIDs := make([]string, 0, 2)
+	for rows.Next() {
+		var taskID string
+		if err := rows.Scan(&taskID); err != nil {
+			return mapPgErr(err)
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	if err := rows.Err(); err != nil {
+		return mapPgErr(err)
+	}
+	if len(taskIDs) > 1 {
+		return store.ErrConflict
+	}
+
+	currentTaskID := ""
+	if len(taskIDs) == 1 {
+		currentTaskID = taskIDs[0]
+	}
+
+	if _, err := tx.Exec(ctx, `
+		update public.agents
+		set current_task_id = nullif($2, '')::uuid,
+		    updated_at = now()
+		where id = $1::uuid
+	`, agentID, currentTaskID); err != nil {
+		return mapPgErr(err)
+	}
+
+	return nil
+}
+
 func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*model.Task, error) {
 	if strings.TrimSpace(req.AgentID) == "" {
 		return nil, errors.New("agent_id_required")
@@ -808,14 +885,9 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 				return nil, mapPgErr(err)
 			}
 
-			// Update agent's current_task_id.
-			// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
-			_, _ = tx.Exec(ctx, `
-				update public.agents
-				set current_task_id = $2::uuid,
-				    updated_at = now()
-				where id = $1::uuid
-			`, req.AgentID, out.ID)
+			if err := s.syncAgentCurrentTaskTx(ctx, tx, req.AgentID); err != nil {
+				return nil, err
+			}
 
 			if err := tx.Commit(ctx); err != nil {
 				return nil, mapPgErr(err)
@@ -861,14 +933,9 @@ func (s *Store) ClaimTask(ctx context.Context, req store.ClaimTaskRequest) (*mod
 		`, req.AgentID, idemKey, t.ID)
 	}
 
-	// Update agent's current_task_id.
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
-	_, _ = tx.Exec(ctx, `
-		update public.agents
-		set current_task_id = $2::uuid,
-		    updated_at = now()
-		where id = $1::uuid
-	`, req.AgentID, t.ID)
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, req.AgentID); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
@@ -957,14 +1024,9 @@ func (s *Store) AssignTask(ctx context.Context, req store.AssignTaskRequest) (*m
 		}
 	}
 
-	// Update agent's current_task_id.
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
-	_, _ = tx.Exec(ctx, `
-		update public.agents
-		set current_task_id = $2::uuid,
-		    updated_at = now()
-		where id = $1::uuid
-	`, req.AgentID, t.ID)
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, req.AgentID); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, mapPgErr(err)
@@ -1113,19 +1175,12 @@ func (s *Store) CompleteTask(ctx context.Context, req store.CompleteTaskRequest)
 		}
 	}
 
-	// Clear agent's current_task_id (task is complete)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
-	if agentID != "" {
-		_, _ = tx.Exec(ctx, `
-			update public.agents
-			set current_task_id = null,
-			    updated_at = now()
-			where id = $1::uuid
-		`, agentID)
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, agentID); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -1239,19 +1294,12 @@ func (s *Store) FailTask(ctx context.Context, req store.FailTaskRequest) (*model
 		}
 	}
 
-	// Clear agent's current_task_id (task failed)
-	// NOTE: Do NOT update claude_status - heartbeat is sole source of truth
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		agentID = strings.TrimSpace(t.AssignedAgentID)
 	}
-	if agentID != "" {
-		_, _ = tx.Exec(ctx, `
-			update public.agents
-			set current_task_id = null,
-			    updated_at = now()
-			where id = $1::uuid
-		`, agentID)
+	if err := s.syncAgentCurrentTaskTx(ctx, tx, agentID); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
