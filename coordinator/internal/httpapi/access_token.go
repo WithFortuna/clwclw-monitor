@@ -15,7 +15,9 @@ import (
 )
 
 var validScopes = map[string]bool{
-	"tasks:write": true,
+	"tasks:write":    true,
+	"channels:write": true,
+	"chains:write":   true,
 }
 
 // --- Token management handlers (JWT auth) ---
@@ -171,15 +173,22 @@ func (s *Server) handleExternalCreateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Resolve channel by name + userID (owner-scoped)
+	// Resolve channel by name + userID (owner-scoped); auto-create if absent
 	channel, err := s.store.GetChannelByNameAndUserID(r.Context(), channelName, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "channel_not_found", fmt.Sprintf("channel %q not found", channelName))
+			channel, err = s.store.CreateChannel(r.Context(), model.Channel{
+				UserID: userID,
+				Name:   channelName,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "failed to create channel")
+				return
+			}
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal", "failed to lookup channel")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal", "failed to lookup channel")
-		return
 	}
 
 	// Resolve or create chain
